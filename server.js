@@ -14,7 +14,6 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function(origin, callback) {
-    // Autoriser les requêtes sans origine (comme les apps mobiles ou curl)
     if (!origin) return callback(null, true);
     if (allowedOrigins.indexOf(origin) === -1) {
       const msg = `L'origine ${origin} n'est pas autorisée par CORS`;
@@ -34,6 +33,7 @@ const wss = new WebSocket.Server({ server });
 const streams = new Map(); // { streamId: { broadcasterId, viewers: Set(), metadata } }
 const clients = new Map(); // { clientId: { ws, type, streamId } }
 const PORT = process.env.PORT || 5000;
+
 // Gestion WebSocket
 wss.on('connection', (ws, req) => {
   const clientId = uuidv4();
@@ -49,11 +49,21 @@ wss.on('connection', (ws, req) => {
     connectedAt: new Date()
   });
   
-  // Envoyer confirmation
+  // Préparer la liste des streams disponibles
+  const streamsList = Array.from(streams.entries()).map(([id, stream]) => ({
+    id,
+    broadcaster: stream.broadcasterId,
+    viewers: stream.viewers.size,
+    metadata: stream.metadata,
+    isActive: clients.has(stream.broadcasterId)
+  }));
+  
+  // Envoyer confirmation avec tous les streams
   ws.send(JSON.stringify({
     type: 'welcome',
     clientId,
-    availableStreams: Array.from(streams.keys())
+    availableStreams: streamsList.map(s => s.id),
+    streams: streamsList
   }));
   
   // Gestion des messages
@@ -89,12 +99,7 @@ wss.on('connection', (ws, req) => {
         case 'list-streams':
           ws.send(JSON.stringify({
             type: 'streams-list',
-            streams: Array.from(streams.entries()).map(([id, stream]) => ({
-              id,
-              broadcaster: stream.broadcasterId,
-              viewers: stream.viewers.size,
-              metadata: stream.metadata
-            }))
+            streams: streamsList
           }));
           break;
       }
@@ -138,8 +143,8 @@ function handleCreateStream(broadcasterId, message) {
   
   console.log(`📡 Stream créé: ${streamId} par ${broadcasterId}`);
   
-  // Notifier tous les clients qu'un nouveau stream est disponible
-  broadcastToAll({
+  // Notifier tous les viewers qu'un nouveau stream est disponible
+  broadcastToViewers({
     type: 'stream-added',
     streamId,
     metadata: streams.get(streamId).metadata,
@@ -165,17 +170,7 @@ function handleJoinStream(viewerId, message) {
   const client = clients.get(viewerId);
   client.streamId = streamId;
   
-  // Informer le broadcaster
-  const broadcaster = clients.get(stream.broadcasterId);
-  if (broadcaster && broadcaster.ws.readyState === WebSocket.OPEN) {
-    broadcaster.ws.send(JSON.stringify({
-      type: 'viewer-joined',
-      viewerId,
-      streamId,
-      viewerCount: stream.viewers.size
-    }));
-  }
-  
+  // Informer le viewer qu'il a rejoint
   client.ws.send(JSON.stringify({
     type: 'stream-joined',
     streamId,
@@ -188,16 +183,17 @@ function handleJoinStream(viewerId, message) {
 
 // Relayer les offres WebRTC
 function handleOffer(senderId, message) {
-  const { targetId, sdp } = message;
+  const { targetId, sdp, streamId } = message;
   const targetClient = clients.get(targetId);
   
   if (targetClient && targetClient.ws.readyState === WebSocket.OPEN) {
     targetClient.ws.send(JSON.stringify({
       type: 'offer',
       senderId,
+      streamId,
       sdp
     }));
-    console.log(`📤 Offer relayé: ${senderId} -> ${targetId}`);
+    console.log(`📤 Offer relayé: ${senderId} -> ${targetId} (${streamId})`);
   }
 }
 
@@ -247,16 +243,15 @@ function handleDisconnect(clientId) {
             type: 'stream-ended',
             streamId: client.streamId
           }));
+          viewer.streamId = null;
         }
-        // Réinitialiser le viewer
-        if (viewer) viewer.streamId = null;
       });
       
       streams.delete(client.streamId);
       console.log(`🗑️ Stream supprimé: ${client.streamId}`);
       
-      // Notifier tous les clients
-      broadcastToAll({
+      // Notifier tous les viewers
+      broadcastToViewers({
         type: 'stream-removed',
         streamId: client.streamId
       }, clientId);
@@ -285,18 +280,23 @@ function handleDisconnect(clientId) {
 }
 
 function handleLeaveStream(clientId) {
-  handleDisconnect(clientId);
   const client = clients.get(clientId);
-  if (client) {
+  if (client && client.streamId) {
+    const stream = streams.get(client.streamId);
+    if (stream) {
+      stream.viewers.delete(clientId);
+    }
     client.streamId = null;
     client.type = 'viewer';
   }
 }
 
-// Fonction pour broadcast à tous les clients
-function broadcastToAll(message, excludeId = null) {
+// Fonction pour broadcast à tous les viewers
+function broadcastToViewers(message, excludeId = null) {
   clients.forEach((client, clientId) => {
-    if (clientId !== excludeId && client.ws.readyState === WebSocket.OPEN) {
+    if (clientId !== excludeId && 
+        client.type === 'viewer' && 
+        client.ws.readyState === WebSocket.OPEN) {
       client.ws.send(JSON.stringify(message));
     }
   });
@@ -349,7 +349,7 @@ app.get('/api/stats', (req, res) => {
 server.listen(PORT, () => {
   console.log(`
   ====================================
-  🚀 SERVEUR WEBRTC STREAMING
+  🚀 SERVEUR WEBRTC MULTI-STREAM
   ====================================
   Port: ${PORT}
   WebSocket: wss://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
