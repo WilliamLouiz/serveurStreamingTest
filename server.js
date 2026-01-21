@@ -5,7 +5,26 @@ const http = require('http');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
-app.use(cors({ origin: '*' }));
+
+// Configurer CORS pour la production
+const allowedOrigins = [
+  'https://streaming-video-unz3.onrender.com',
+  'http://localhost:3000'
+];
+
+app.use(cors({
+  origin: function(origin, callback) {
+    // Autoriser les requêtes sans origine (comme les apps mobiles ou curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = `L'origine ${origin} n'est pas autorisée par CORS`;
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true
+}));
+
 app.use(express.json());
 
 const server = http.createServer(app);
@@ -338,3 +357,12 @@ server.listen(PORT, () => {
   ====================================
   `);
 });
+
+// Ping pour éviter que Render mette le serveur en veille
+setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.ping();
+    }
+  });
+}, 30000);
