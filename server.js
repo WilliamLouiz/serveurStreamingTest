@@ -14,7 +14,7 @@ const wss = new WebSocket.Server({ server });
 // Stockage des connexions et streams
 const streams = new Map(); // { streamId: { broadcasterId, viewers: Set(), metadata } }
 const clients = new Map(); // { clientId: { ws, type, streamId } }
-
+const PORT = process.env.PORT || 5000;
 // Gestion WebSocket
 wss.on('connection', (ws, req) => {
   const clientId = uuidv4();
@@ -327,15 +327,14 @@ app.get('/api/stats', (req, res) => {
 });
 
 // Démarrer le serveur
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, () => {
   console.log(`
   ====================================
   🚀 SERVEUR WEBRTC STREAMING
   ====================================
   Port: ${PORT}
-  WebSocket: ws://localhost:${PORT}
-  API: http://localhost:${PORT}/api/streams
+  WebSocket: wss://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
+  API: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}/api/streams
   ====================================
   `);
 });
