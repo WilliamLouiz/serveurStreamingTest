@@ -179,6 +179,18 @@ function handleJoinStream(viewerId, message) {
   }));
   
   console.log(`👁️ Viewer ${viewerId} a rejoint ${streamId}`);
+  
+  // **NOUVEAU : Informer le broadcaster qu'un viewer a rejoint**
+  const broadcaster = clients.get(stream.broadcasterId);
+  if (broadcaster && broadcaster.ws.readyState === WebSocket.OPEN) {
+    broadcaster.ws.send(JSON.stringify({
+      type: 'viewer-joined',
+      viewerId,
+      streamId,
+      viewerCount: stream.viewers.size
+    }));
+    console.log(`📤 Notifié le broadcaster ${stream.broadcasterId} du viewer ${viewerId}`);
+  }
 }
 
 // Relayer les offres WebRTC
