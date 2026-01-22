@@ -32,6 +32,7 @@ const wss = new WebSocket.Server({ server });
 // Stockage des connexions et streams
 const streams = new Map(); // { streamId: { broadcasterId, viewers: Set(), metadata } }
 const clients = new Map(); // { clientId: { ws, type, streamId } }
+const deletedStreams = new Set(); // { streamId }
 const PORT = process.env.PORT || 5000;
 
 // Gestion WebSocket
@@ -49,21 +50,23 @@ wss.on('connection', (ws, req) => {
     connectedAt: new Date()
   });
   
-  // Préparer la liste des streams disponibles
-  const streamsList = Array.from(streams.entries()).map(([id, stream]) => ({
-    id,
-    broadcaster: stream.broadcasterId,
-    viewers: stream.viewers.size,
-    metadata: stream.metadata,
-    isActive: clients.has(stream.broadcasterId)
-  }));
+  // Préparer la liste des streams disponibles (filtrer les supprimés)
+  const activeStreamsList = Array.from(streams.entries())
+    .filter(([id]) => !deletedStreams.has(id))
+    .map(([id, stream]) => ({
+      id,
+      broadcaster: stream.broadcasterId,
+      viewers: stream.viewers.size,
+      metadata: stream.metadata,
+      isActive: clients.has(stream.broadcasterId)
+    }));
   
   // Envoyer confirmation avec tous les streams
   ws.send(JSON.stringify({
     type: 'welcome',
     clientId,
-    availableStreams: streamsList.map(s => s.id),
-    streams: streamsList
+    availableStreams: activeStreamsList.map(s => s.id),
+    streams: activeStreamsList
   }));
   
   // Gestion des messages
@@ -96,10 +99,14 @@ wss.on('connection', (ws, req) => {
           handleLeaveStream(clientId);
           break;
           
+        case 'delete-stream':
+          handleDeleteStream(message.streamId, clientId);
+          break;
+          
         case 'list-streams':
           ws.send(JSON.stringify({
             type: 'streams-list',
-            streams: streamsList
+            streams: activeStreamsList
           }));
           break;
       }
@@ -119,6 +126,11 @@ wss.on('connection', (ws, req) => {
 function handleCreateStream(broadcasterId, message) {
   const streamId = message.streamId || `stream-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const metadata = message.metadata || {};
+  
+  // Vérifier si le stream a été précédemment supprimé
+  if (deletedStreams.has(streamId)) {
+    deletedStreams.delete(streamId);
+  }
   
   streams.set(streamId, {
     broadcasterId,
@@ -155,17 +167,18 @@ function handleCreateStream(broadcasterId, message) {
 // Fonction pour rejoindre un stream
 function handleJoinStream(viewerId, message) {
   const { streamId } = message;
-  const stream = streams.get(streamId);
   
-  if (!stream) {
+  // Vérifier si le stream existe et n'est pas supprimé
+  if (!streams.has(streamId) || deletedStreams.has(streamId)) {
     const client = clients.get(viewerId);
     client.ws.send(JSON.stringify({
       type: 'error',
-      message: 'Stream non trouvé'
+      message: 'Stream non trouvé ou supprimé'
     }));
     return;
   }
   
+  const stream = streams.get(streamId);
   stream.viewers.add(viewerId);
   const client = clients.get(viewerId);
   client.streamId = streamId;
@@ -180,7 +193,7 @@ function handleJoinStream(viewerId, message) {
   
   console.log(`👁️ Viewer ${viewerId} a rejoint ${streamId}`);
   
-  // **NOUVEAU : Informer le broadcaster qu'un viewer a rejoint**
+  // Informer le broadcaster qu'un viewer a rejoint
   const broadcaster = clients.get(stream.broadcasterId);
   if (broadcaster && broadcaster.ws.readyState === WebSocket.OPEN) {
     broadcaster.ws.send(JSON.stringify({
@@ -247,6 +260,9 @@ function handleDisconnect(clientId) {
   if (client.type === 'broadcaster' && client.streamId) {
     const stream = streams.get(client.streamId);
     if (stream) {
+      // Marquer comme supprimé
+      deletedStreams.add(client.streamId);
+      
       // Informer tous les viewers
       stream.viewers.forEach(viewerId => {
         const viewer = clients.get(viewerId);
@@ -265,7 +281,8 @@ function handleDisconnect(clientId) {
       // Notifier tous les viewers
       broadcastToViewers({
         type: 'stream-removed',
-        streamId: client.streamId
+        streamId: client.streamId,
+        deleted: true
       }, clientId);
     }
   }
@@ -303,6 +320,63 @@ function handleLeaveStream(clientId) {
   }
 }
 
+// Fonction pour supprimer un stream manuellement
+function handleDeleteStream(streamId, requesterId) {
+  if (!streams.has(streamId)) return;
+  
+  const stream = streams.get(streamId);
+  
+  // Vérifier si le requester est le broadcaster
+  if (stream.broadcasterId !== requesterId) {
+    const client = clients.get(requesterId);
+    if (client) {
+      client.ws.send(JSON.stringify({
+        type: 'error',
+        message: 'Seul le broadcaster peut supprimer ce stream'
+      }));
+    }
+    return;
+  }
+  
+  // Marquer comme supprimé définitivement
+  deletedStreams.add(streamId);
+  
+  // Informer tous les viewers
+  stream.viewers.forEach(viewerId => {
+    const viewer = clients.get(viewerId);
+    if (viewer && viewer.ws.readyState === WebSocket.OPEN) {
+      viewer.ws.send(JSON.stringify({
+        type: 'stream-deleted',
+        streamId: streamId
+      }));
+      viewer.streamId = null;
+    }
+  });
+  
+  // Informer le broadcaster
+  const broadcaster = clients.get(stream.broadcasterId);
+  if (broadcaster) {
+    broadcaster.ws.send(JSON.stringify({
+      type: 'stream-deleted',
+      streamId: streamId
+    }));
+    broadcaster.streamId = null;
+    broadcaster.type = 'viewer';
+  }
+  
+  // Supprimer le stream
+  streams.delete(streamId);
+  
+  // Notifier tous les viewers que le stream a été supprimé
+  broadcastToViewers({
+    type: 'stream-removed',
+    streamId: streamId,
+    deleted: true
+  }, requesterId);
+  
+  console.log(`🗑️ Stream supprimé définitivement: ${streamId}`);
+}
+
 // Fonction pour broadcast à tous les viewers
 function broadcastToViewers(message, excludeId = null) {
   clients.forEach((client, clientId) => {
@@ -319,13 +393,15 @@ app.get('/api/streams', (req, res) => {
   const activeStreams = [];
   
   streams.forEach((stream, streamId) => {
-    activeStreams.push({
-      id: streamId,
-      broadcaster: stream.broadcasterId,
-      viewers: stream.viewers.size,
-      metadata: stream.metadata,
-      isActive: clients.has(stream.broadcasterId)
-    });
+    if (!deletedStreams.has(streamId)) {
+      activeStreams.push({
+        id: streamId,
+        broadcaster: stream.broadcasterId,
+        viewers: stream.viewers.size,
+        metadata: stream.metadata,
+        isActive: clients.has(stream.broadcasterId)
+      });
+    }
   });
   
   res.json({
@@ -353,6 +429,7 @@ app.get('/api/stats', (req, res) => {
       viewers
     },
     streams: streams.size,
+    deletedStreams: deletedStreams.size,
     uptime: process.uptime()
   });
 });
@@ -360,13 +437,10 @@ app.get('/api/stats', (req, res) => {
 // Démarrer le serveur
 server.listen(PORT, () => {
   console.log(`
-  ====================================
-  🚀 SERVEUR WEBRTC MULTI-STREAM
-  ====================================
+  SERVEUR WEBRTC MULTI-STREAM
   Port: ${PORT}
   WebSocket: wss://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
   API: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}/api/streams
-  ====================================
   `);
 });
 
