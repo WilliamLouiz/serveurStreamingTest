@@ -54,8 +54,39 @@ async function createTables() {
         email VARCHAR(255) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
         role VARCHAR(20) NOT NULL CHECK (role IN ('admin', 'formateur', 'stagiaire')),
+        is_validated BOOLEAN DEFAULT false,
+        validation_token VARCHAR(255),
+        token_expires_at TIMESTAMP,
+        validated_at TIMESTAMP,
+        validated_by INTEGER REFERENCES users(id),
+        status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'validated', 'rejected', 'suspended')),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS email_templates (
+        id SERIAL PRIMARY KEY,
+        template_name VARCHAR(100) UNIQUE NOT NULL,
+        subject VARCHAR(255) NOT NULL,
+        html_content TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Table email_logs
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS email_logs (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        template_name VARCHAR(100),
+        recipient_email VARCHAR(255) NOT NULL,
+        subject VARCHAR(255) NOT NULL,
+        sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        status VARCHAR(20) NOT NULL,
+        error_message TEXT
       )
     `);
     
@@ -106,6 +137,51 @@ async function createTables() {
         is_active BOOLEAN DEFAULT true
       )
     `);
+
+    // Insérer les templates d'email par défaut
+    await client.query(`
+      INSERT INTO email_templates (template_name, subject, html_content) 
+      VALUES 
+      (
+        'account_validated',
+        'Votre compte a été validé !',
+        '<h1>Félicitations {{nom}} {{prenom}} !</h1>
+        <p>Votre compte sur notre plateforme de streaming a été validé par l''administrateur.</p>
+        <p>Vous pouvez maintenant vous connecter et accéder à toutes les fonctionnalités.</p>
+        <p>Pour vous connecter, cliquez sur le lien suivant :</p>
+        <p><a href="{{login_url}}">Se connecter</a></p>
+        <p>Si vous n''avez pas créé de compte, veuillez ignorer cet email.</p>
+        <br>
+        <p>Cordialement,<br>L''équipe de la plateforme</p>'
+      ),
+      (
+        'account_created',
+        'Nouveau compte en attente de validation',
+        '<h1>Nouvelle inscription</h1>
+        <p>Un nouvel utilisateur s''est inscrit et attend votre validation :</p>
+        <ul>
+          <li><strong>Nom :</strong> {{nom}}</li>
+          <li><strong>Prénom :</strong> {{prenom}}</li>
+          <li><strong>Email :</strong> {{email}}</li>
+          <li><strong>Rôle :</strong> {{role}}</li>
+          <li><strong>Date d''inscription :</strong> {{created_at}}</li>
+        </ul>
+        <p>Pour valider ou rejeter ce compte, connectez-vous à l''administration.</p>
+        <p><a href="{{admin_url}}">Accéder à l''administration</a></p>'
+      ),
+      (
+        'account_rejected',
+        'Votre compte a été rejeté',
+        '<h1>Notification concernant votre compte</h1>
+        <p>Bonjour {{nom}} {{prenom}},</p>
+        <p>Votre demande de création de compte sur notre plateforme de streaming a été rejetée.</p>
+        <p>Raison : {{rejection_reason}}</p>
+        <p>Si vous pensez qu''il s''agit d''une erreur, veuillez contacter l''administrateur.</p>
+        <br>
+        <p>Cordialement,<br>L''équipe de la plateforme</p>'
+      )
+      ON CONFLICT (template_name) DO NOTHING
+    `);
     
     // Créer un index pour améliorer les performances
     await client.query(`
@@ -117,20 +193,20 @@ async function createTables() {
       CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token);
       CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
     `);
-    
-    // Créer un utilisateur admin par défaut (mot de passe: admin123)
+
+    // Créer un utilisateur admin par défaut
     const adminPassword = await require('bcryptjs').hash('admin123', 10);
     await client.query(`
       INSERT INTO users (nom, prenom, email, password, role)
-      VALUES ('Admin', 'System', 'admin@streaming.app', $1, 'admin')
+      VALUES ('William', 'NJ', 'njatomiarintsoawilliam@gmail.com', $1, 'admin')
       ON CONFLICT (email) DO NOTHING
     `, [adminPassword]);
     
-    console.log('✅ Tables créées avec succès!');
-    console.log('🔐 Compte admin créé: admin@streaming.app / admin123');
+    console.log(' Tables créées avec succès!');
+    console.log(' Compte admin créé: njatomiarintsoawilliam@gmail.com / admin123');
     
   } catch (error) {
-    console.error('❌ Erreur lors de la création des tables:', error);
+    console.error(' Erreur lors de la création des tables:', error);
   } finally {
     client.release();
     await appPool.end();
@@ -141,7 +217,7 @@ async function createTables() {
 async function main() {
   await initializeDatabase();
   await createTables();
-  console.log('🎉 Initialisation terminée!');
+  console.log(' Initialisation terminée!');
   process.exit(0);
 }
 

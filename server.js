@@ -10,13 +10,35 @@ app.use(express.json());
 
 const server = http.createServer(app);
 
-// 🔥 IMPORTANT: Créer le WebSocket Server avec 'noServer: true'
+// Middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Configuration CORS
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || '*',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Middleware de logging
+app.use((req, res, next) => {
+  console.log(` ${req.method} ${req.path} depuis: ${req.headers.origin || 'direct'}`);
+  next();
+});
+
+const apiRoutes = require('./routes/apiRoutes');
+app.use('/api', apiRoutes);
+
+//  Créer le WebSocket Server avec 'noServer: true'
 const wss = new WebSocket.Server({ 
   noServer: true, // Ne pas créer automatiquement le serveur
   perMessageDeflate: false
 });
 
-// 🔥 Gérer manuellement l'upgrade WebSocket
+
+//  Gérer manuellement l'upgrade WebSocket
 server.on('upgrade', (request, socket, head) => {
   console.log(`🔌 Upgrade request for WebSocket`);
   
@@ -45,19 +67,6 @@ function getLocalIP() {
 }
 
 const LOCAL_IP = getLocalIP();
-
-// Configuration CORS pour les requêtes HTTP
-app.use(cors({
-  origin: '*', // TOUTES les IPs sont acceptées
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
-}));
-
-// Middleware de logging
-app.use((req, res, next) => {
-  console.log(`🌐 ${req.method} ${req.path} depuis: ${req.headers.origin || 'direct'}`);
-  next();
-});
 
 // WebSocket handling - IDENTIQUE au serveur 1
 wss.on("connection", (ws, req) => {
@@ -443,17 +452,23 @@ app.get("/test-websocket", (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-// 🔥 Utiliser server.listen() au lieu de app.listen()
-server.listen(PORT, "0.0.0.0", () => {
-  console.log("\n🚀 ===== SERVEUR DÉMARRÉ ===== 🚀");
-  console.log("📡 URLs d'accès:");
+server.listen(PORT, "0.0.0.0", async () => {
+  const LOCAL_IP = getLocalIP();
+  
+  console.log("\n ===== SERVEUR DÉMARRÉ ===== 🚀");
+  console.log("URLs d'accès:");
   console.log(`   - IP locale:  http://${LOCAL_IP}:${PORT}`);
   console.log(`   - Localhost:  http://localhost:${PORT}`);
   console.log(`   - WebSocket:  ws://${LOCAL_IP}:${PORT}`);
   console.log(`   - WebSocket:  ws://localhost:${PORT}`);
   console.log("");
-  console.log("✅ CORS configuré pour accepter TOUTES les origines (*)");
-  console.log("🔓 Toutes les IP peuvent se connecter");
-  console.log("\n🌐 Test WebSocket:");
-  console.log(`   http://localhost:${PORT}/test-websocket`);
+  console.log(" Base de données: PostgreSQL");
+  console.log(" Système d'authentification: JWT + Sessions");
+  console.log("\n Routes API disponibles:");
+  console.log(`   - POST /api/auth/register`);
+  console.log(`   - POST /api/auth/login`);
+  console.log(`   - GET  /api/auth/profile`);
+  console.log(`   - GET  /api/users`);
+  console.log(`   - GET  /api/channels`);
+  console.log(`   - GET  /health`);
 });
