@@ -1,454 +1,459 @@
-const WebSocket = require('ws');
-const express = require('express');
-const cors = require('cors');
-const http = require('http');
-const { v4: uuidv4 } = require('uuid');
+const express = require("express");
+const http = require("http");
+const WebSocket = require("ws");
+const cors = require("cors");
+const os = require("os");
 
 const app = express();
-
-// Configurer CORS pour la production
-const allowedOrigins = [
-  'https://streaming-video-unz3.onrender.com',
-  'http://localhost:3000'
-];
-
-app.use(cors({
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = `L'origine ${origin} n'est pas autorisée par CORS`;
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
-  credentials: true
-}));
 
 app.use(express.json());
 
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
 
-// Stockage des connexions et streams
-const streams = new Map(); // { streamId: { broadcasterId, viewers: Set(), metadata } }
-const clients = new Map(); // { clientId: { ws, type, streamId } }
-const deletedStreams = new Set(); // { streamId }
-const PORT = process.env.PORT || 5000;
+// 🔥 IMPORTANT: Créer le WebSocket Server avec 'noServer: true'
+const wss = new WebSocket.Server({ 
+  noServer: true, // Ne pas créer automatiquement le serveur
+  perMessageDeflate: false
+});
 
-// Gestion WebSocket
-wss.on('connection', (ws, req) => {
-  const clientId = uuidv4();
-  let clientType = 'viewer';
+// 🔥 Gérer manuellement l'upgrade WebSocket
+server.on('upgrade', (request, socket, head) => {
+  console.log(`🔌 Upgrade request for WebSocket`);
   
-  console.log(`🔌 Nouvelle connexion: ${clientId}`);
-  
-  // Initialiser le client
-  clients.set(clientId, {
-    ws,
-    type: clientType,
-    streamId: null,
-    connectedAt: new Date()
+  // Accepter toutes les connexions WebSocket
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
   });
+});
+
+// Structures identiques au serveur 1
+const channels = new Map();
+const channelStats = new Map();
+
+console.log("🟢 Starting Multi-Channel JPEG Streaming Server (Backend)...");
+
+function getLocalIP() {
+  const interfaces = os.networkInterfaces();
+  for (const interfaceName in interfaces) {
+    for (const iface of interfaces[interfaceName]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return 'localhost';
+}
+
+const LOCAL_IP = getLocalIP();
+
+// Configuration CORS pour les requêtes HTTP
+app.use(cors({
+  origin: '*', // TOUTES les IPs sont acceptées
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+}));
+
+// Middleware de logging
+app.use((req, res, next) => {
+  console.log(`🌐 ${req.method} ${req.path} depuis: ${req.headers.origin || 'direct'}`);
+  next();
+});
+
+// WebSocket handling - IDENTIQUE au serveur 1
+wss.on("connection", (ws, req) => {
+  const ip = req.socket.remoteAddress;
+  const clientId = Date.now();
+  let currentChannel = null;
+  let isUnity = false;
   
-  // Préparer la liste des streams disponibles (filtrer les supprimés)
-  const activeStreamsList = Array.from(streams.entries())
-    .filter(([id]) => !deletedStreams.has(id))
-    .map(([id, stream]) => ({
-      id,
-      broadcaster: stream.broadcasterId,
-      viewers: stream.viewers.size,
-      metadata: stream.metadata,
-      isActive: clients.has(stream.broadcasterId)
-    }));
-  
-  // Envoyer confirmation avec tous les streams
+  console.log(`✅ [${clientId}] WebSocket CONNECTED from ${ip}`);
+
+  let expectingFrame = false;
+  let currentFrameMetadata = null;
+
+  // Envoyer un message de confirmation de connexion
   ws.send(JSON.stringify({
     type: 'welcome',
-    clientId,
-    availableStreams: activeStreamsList.map(s => s.id),
-    streams: activeStreamsList
+    message: 'Connected to streaming server',
+    timestamp: Date.now()
   }));
-  
-  // Gestion des messages
-  ws.on('message', async (data) => {
+
+  ws.on("message", (msg) => {
+    const buffer = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
+    
+    if (buffer.length === 1 && buffer[0] === 0x1E) {
+      expectingFrame = true;
+      return;
+    }
+    
+    if (expectingFrame && currentFrameMetadata) {
+      try {
+        broadcastToChannel(currentFrameMetadata.channelId, buffer, currentFrameMetadata);
+        expectingFrame = false;
+        currentFrameMetadata = null;
+      } catch (e) {
+        console.log(`❌ [${clientId}] Error broadcasting frame:`, e.message);
+      }
+      return;
+    }
+    
     try {
-      const message = JSON.parse(data.toString());
+      const data = buffer.toString();
+      const msgObj = JSON.parse(data);
       
-      switch (message.type) {
-        case 'create-stream':
-          handleCreateStream(clientId, message);
+      switch(msgObj.type) {
+        case 'unity-register':
+          console.log(`🎮 [${clientId}] Unity registering for channel: ${msgObj.channelId}`);
+          registerUnity(ws, msgObj.channelId, msgObj.metadata);
+          currentChannel = msgObj.channelId;
+          isUnity = true;
+          
+          ws.send(JSON.stringify({ 
+            type: 'register-ack', 
+            channelId: msgObj.channelId 
+          }));
+          
+          updateViewerCount(msgObj.channelId);
           break;
           
-        case 'join-stream':
-          handleJoinStream(clientId, message);
+        case 'viewer-subscribe':
+          console.log(`👀 [${clientId}] Viewer subscribing to channel: ${msgObj.channelId}`);
+          subscribeViewer(ws, msgObj.channelId);
+          currentChannel = msgObj.channelId;
+          
+          ws.send(JSON.stringify({ 
+            type: 'subscribe-ack', 
+            channelId: msgObj.channelId,
+            metadata: getChannelMetadata(msgObj.channelId)
+          }));
+          
+          updateViewerCount(msgObj.channelId);
           break;
           
-        case 'offer':
-          handleOffer(clientId, message);
+        case 'viewer-unsubscribe':
+          console.log(`👋 [${clientId}] Viewer unsubscribing from channel: ${msgObj.channelId}`);
+          unsubscribeViewer(ws, msgObj.channelId);
+          currentChannel = null;
           break;
           
-        case 'answer':
-          handleAnswer(clientId, message);
+        case 'frame':
+          currentFrameMetadata = msgObj;
           break;
           
-        case 'ice-candidate':
-          handleIceCandidate(clientId, message);
+        case 'ping':
+          ws.send(JSON.stringify({ 
+            type: 'pong',
+            timestamp: Date.now()
+          }));
           break;
           
-        case 'leave-stream':
-          handleLeaveStream(clientId);
-          break;
-          
-        case 'delete-stream':
-          handleDeleteStream(message.streamId, clientId);
-          break;
-          
-        case 'list-streams':
+        case 'list-channels':
           ws.send(JSON.stringify({
-            type: 'streams-list',
-            streams: activeStreamsList
+            type: 'channels-list',
+            channels: getAvailableChannels(),
+            timestamp: Date.now()
+          }));
+          break;
+          
+        case 'test':
+          // Pour tester la connexion
+          ws.send(JSON.stringify({
+            type: 'test-response',
+            message: 'WebSocket server is working',
+            timestamp: Date.now()
           }));
           break;
       }
-    } catch (err) {
-      console.error('❌ Erreur message:', err);
+    } catch(e) {
+      console.log(`❓ [${clientId}] Unknown message, length: ${buffer.length} bytes`);
     }
   });
-  
-  // Gestion de la déconnexion
-  ws.on('close', () => {
-    console.log(`🔌 Déconnexion: ${clientId}`);
-    handleDisconnect(clientId);
+
+  ws.on("close", () => {
+    console.log(`❌ [${clientId}] Connection closed`);
+    
+    if (isUnity && currentChannel) {
+      console.log(`🎮 Unity disconnected from channel: ${currentChannel}`);
+      removeUnityFromChannel(currentChannel);
+      notifyChannelViewers(currentChannel, { 
+        type: 'unity-disconnected', 
+        channelId: currentChannel 
+      });
+    } else if (currentChannel) {
+      console.log(`👋 Viewer disconnected from channel: ${currentChannel}`);
+      unsubscribeViewer(ws, currentChannel);
+    }
+    
+    updateViewerCount(currentChannel);
+  });
+
+  ws.on("error", (err) => {
+    console.log(`🔥 [${clientId}] Error:`, err.message);
   });
 });
 
-// Fonction pour créer un stream
-function handleCreateStream(broadcasterId, message) {
-  const streamId = message.streamId || `stream-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const metadata = message.metadata || {};
-  
-  // Vérifier si le stream a été précédemment supprimé
-  if (deletedStreams.has(streamId)) {
-    deletedStreams.delete(streamId);
+// === FONCTIONS IDENTIQUES AU SERVEUR 1 ===
+function registerUnity(ws, channelId, metadata) {
+  if (!channels.has(channelId)) {
+    channels.set(channelId, {
+      unity: ws,
+      viewers: new Set(),
+      metadata: metadata || {}
+    });
+  } else {
+    const channel = channels.get(channelId);
+    channel.unity = ws;
+    channel.metadata = metadata || channel.metadata;
   }
   
-  streams.set(streamId, {
-    broadcasterId,
-    viewers: new Set(),
-    metadata: {
-      title: metadata.title || 'Stream sans titre',
-      description: metadata.description || '',
-      createdAt: new Date(),
-      ...metadata
-    }
-  });
-  
-  const client = clients.get(broadcasterId);
-  client.type = 'broadcaster';
-  client.streamId = streamId;
-  
-  client.ws.send(JSON.stringify({
-    type: 'stream-created',
-    streamId,
-    metadata: streams.get(streamId).metadata
-  }));
-  
-  console.log(`📡 Stream créé: ${streamId} par ${broadcasterId}`);
-  
-  // Notifier tous les viewers qu'un nouveau stream est disponible
-  broadcastToViewers({
-    type: 'stream-added',
-    streamId,
-    metadata: streams.get(streamId).metadata,
-    broadcaster: broadcasterId
-  }, broadcasterId);
+  console.log(`✅ Channel '${channelId}' registered/updated`);
 }
 
-// Fonction pour rejoindre un stream
-function handleJoinStream(viewerId, message) {
-  const { streamId } = message;
-  
-  // Vérifier si le stream existe et n'est pas supprimé
-  if (!streams.has(streamId) || deletedStreams.has(streamId)) {
-    const client = clients.get(viewerId);
-    client.ws.send(JSON.stringify({
-      type: 'error',
-      message: 'Stream non trouvé ou supprimé'
+function subscribeViewer(ws, channelId) {
+  if (!channels.has(channelId)) {
+    console.log(`❌ Channel '${channelId}' does not exist`);
+    ws.send(JSON.stringify({ 
+      type: 'subscribe-error', 
+      channelId: channelId,
+      error: 'Channel does not exist'
     }));
     return;
   }
   
-  const stream = streams.get(streamId);
-  stream.viewers.add(viewerId);
-  const client = clients.get(viewerId);
-  client.streamId = streamId;
-  
-  // Informer le viewer qu'il a rejoint
-  client.ws.send(JSON.stringify({
-    type: 'stream-joined',
-    streamId,
-    broadcasterId: stream.broadcasterId,
-    metadata: stream.metadata
-  }));
-  
-  console.log(`👁️ Viewer ${viewerId} a rejoint ${streamId}`);
-  
-  // Informer le broadcaster qu'un viewer a rejoint
-  const broadcaster = clients.get(stream.broadcasterId);
-  if (broadcaster && broadcaster.ws.readyState === WebSocket.OPEN) {
-    broadcaster.ws.send(JSON.stringify({
-      type: 'viewer-joined',
-      viewerId,
-      streamId,
-      viewerCount: stream.viewers.size
-    }));
-    console.log(`📤 Notifié le broadcaster ${stream.broadcasterId} du viewer ${viewerId}`);
+  const channel = channels.get(channelId);
+  channel.viewers.add(ws);
+  console.log(`✅ Viewer subscribed to channel '${channelId}' (total: ${channel.viewers.size})`);
+}
+
+function unsubscribeViewer(ws, channelId) {
+  if (channels.has(channelId)) {
+    const channel = channels.get(channelId);
+    channel.viewers.delete(ws);
+    console.log(`✅ Viewer unsubscribed from channel '${channelId}' (remaining: ${channel.viewers.size})`);
   }
 }
 
-// Relayer les offres WebRTC
-function handleOffer(senderId, message) {
-  const { targetId, sdp, streamId } = message;
-  const targetClient = clients.get(targetId);
-  
-  if (targetClient && targetClient.ws.readyState === WebSocket.OPEN) {
-    targetClient.ws.send(JSON.stringify({
-      type: 'offer',
-      senderId,
-      streamId,
-      sdp
-    }));
-    console.log(`📤 Offer relayé: ${senderId} -> ${targetId} (${streamId})`);
+function removeUnityFromChannel(channelId) {
+  if (channels.has(channelId)) {
+    channels.delete(channelId);
+    console.log(`🗑️ Channel '${channelId}' removed (no Unity source)`);
   }
 }
 
-// Relayer les réponses WebRTC
-function handleAnswer(senderId, message) {
-  const { targetId, sdp } = message;
-  const targetClient = clients.get(targetId);
-  
-  if (targetClient && targetClient.ws.readyState === WebSocket.OPEN) {
-    targetClient.ws.send(JSON.stringify({
-      type: 'answer',
-      senderId,
-      sdp
-    }));
-    console.log(`📥 Answer relayé: ${senderId} -> ${targetId}`);
-  }
-}
-
-// Relayer les candidats ICE
-function handleIceCandidate(senderId, message) {
-  const { targetId, candidate } = message;
-  const targetClient = clients.get(targetId);
-  
-  if (targetClient && targetClient.ws.readyState === WebSocket.OPEN) {
-    targetClient.ws.send(JSON.stringify({
-      type: 'ice-candidate',
-      senderId,
-      candidate
-    }));
-  }
-}
-
-// Gestion de la déconnexion
-function handleDisconnect(clientId) {
-  const client = clients.get(clientId);
-  if (!client) return;
-  
-  // Si c'est un broadcaster, supprimer son stream
-  if (client.type === 'broadcaster' && client.streamId) {
-    const stream = streams.get(client.streamId);
-    if (stream) {
-      // Marquer comme supprimé
-      deletedStreams.add(client.streamId);
-      
-      // Informer tous les viewers
-      stream.viewers.forEach(viewerId => {
-        const viewer = clients.get(viewerId);
-        if (viewer && viewer.ws.readyState === WebSocket.OPEN) {
-          viewer.ws.send(JSON.stringify({
-            type: 'stream-ended',
-            streamId: client.streamId
-          }));
-          viewer.streamId = null;
-        }
-      });
-      
-      streams.delete(client.streamId);
-      console.log(`🗑️ Stream supprimé: ${client.streamId}`);
-      
-      // Notifier tous les viewers
-      broadcastToViewers({
-        type: 'stream-removed',
-        streamId: client.streamId,
-        deleted: true
-      }, clientId);
-    }
+function broadcastToChannel(channelId, frameData, metadata) {
+  if (!channels.has(channelId)) {
+    console.log(`❌ Channel '${channelId}' not found for broadcasting`);
+    return;
   }
   
-  // Si c'est un viewer, le retirer du stream
-  if (client.type === 'viewer' && client.streamId) {
-    const stream = streams.get(client.streamId);
-    if (stream) {
-      stream.viewers.delete(clientId);
-      
-      // Informer le broadcaster
-      const broadcaster = clients.get(stream.broadcasterId);
-      if (broadcaster && broadcaster.ws.readyState === WebSocket.OPEN) {
-        broadcaster.ws.send(JSON.stringify({
-          type: 'viewer-left',
-          viewerId: clientId,
-          viewerCount: stream.viewers.size
+  const channel = channels.get(channelId);
+  const viewerCount = channel.viewers.size;
+  
+  if (viewerCount === 0) return;
+  
+  let sentCount = 0;
+  channel.viewers.forEach(viewer => {
+    if (viewer.readyState === WebSocket.OPEN) {
+      try {
+        viewer.send(JSON.stringify({
+          type: 'frame-metadata',
+          channelId: channelId,
+          timestamp: metadata.timestamp,
+          frameSize: metadata.frameSize
         }));
+        
+        viewer.send(Buffer.from([0x1E]));
+        viewer.send(frameData);
+        
+        sentCount++;
+      } catch(e) {
+        console.log(`⚠️ Error sending to viewer on channel '${channelId}':`, e.message);
+        channel.viewers.delete(viewer);
       }
     }
-  }
-  
-  clients.delete(clientId);
-}
-
-function handleLeaveStream(clientId) {
-  const client = clients.get(clientId);
-  if (client && client.streamId) {
-    const stream = streams.get(client.streamId);
-    if (stream) {
-      stream.viewers.delete(clientId);
-    }
-    client.streamId = null;
-    client.type = 'viewer';
-  }
-}
-
-// Fonction pour supprimer un stream manuellement
-function handleDeleteStream(streamId, requesterId) {
-  if (!streams.has(streamId)) return;
-  
-  const stream = streams.get(streamId);
-  
-  // Vérifier si le requester est le broadcaster
-  if (stream.broadcasterId !== requesterId) {
-    const client = clients.get(requesterId);
-    if (client) {
-      client.ws.send(JSON.stringify({
-        type: 'error',
-        message: 'Seul le broadcaster peut supprimer ce stream'
-      }));
-    }
-    return;
-  }
-  
-  // Marquer comme supprimé définitivement
-  deletedStreams.add(streamId);
-  
-  // Informer tous les viewers
-  stream.viewers.forEach(viewerId => {
-    const viewer = clients.get(viewerId);
-    if (viewer && viewer.ws.readyState === WebSocket.OPEN) {
-      viewer.ws.send(JSON.stringify({
-        type: 'stream-deleted',
-        streamId: streamId
-      }));
-      viewer.streamId = null;
-    }
   });
   
-  // Informer le broadcaster
-  const broadcaster = clients.get(stream.broadcasterId);
-  if (broadcaster) {
-    broadcaster.ws.send(JSON.stringify({
-      type: 'stream-deleted',
-      streamId: streamId
+  if (Math.random() < 0.05) {
+    console.log(`📤 [${channelId}] Sent frame to ${sentCount}/${viewerCount} viewer(s), size: ${Math.round(frameData.length/1024)} KB`);
+  }
+  
+  updateChannelStats(channelId, viewerCount);
+}
+
+function updateViewerCount(channelId) {
+  if (!channelId || !channels.has(channelId)) return;
+  
+  const channel = channels.get(channelId);
+  const viewerCount = channel.viewers.size;
+  
+  if (channel.unity && channel.unity.readyState === WebSocket.OPEN) {
+    channel.unity.send(JSON.stringify({
+      type: 'viewer-count-update',
+      channelId: channelId,
+      count: viewerCount
     }));
-    broadcaster.streamId = null;
-    broadcaster.type = 'viewer';
+  }
+}
+
+function updateChannelStats(channelId, viewerCount) {
+  if (!channelStats.has(channelId)) {
+    channelStats.set(channelId, {
+      viewerCount: 0,
+      lastFrameTime: null,
+      frameCount: 0
+    });
   }
   
-  // Supprimer le stream
-  streams.delete(streamId);
-  
-  // Notifier tous les viewers que le stream a été supprimé
-  broadcastToViewers({
-    type: 'stream-removed',
-    streamId: streamId,
-    deleted: true
-  }, requesterId);
-  
-  console.log(`🗑️ Stream supprimé définitivement: ${streamId}`);
+  const stats = channelStats.get(channelId);
+  stats.viewerCount = viewerCount;
+  stats.lastFrameTime = new Date();
+  stats.frameCount++;
 }
 
-// Fonction pour broadcast à tous les viewers
-function broadcastToViewers(message, excludeId = null) {
-  clients.forEach((client, clientId) => {
-    if (clientId !== excludeId && 
-        client.type === 'viewer' && 
-        client.ws.readyState === WebSocket.OPEN) {
-      client.ws.send(JSON.stringify(message));
-    }
-  });
+function getChannelMetadata(channelId) {
+  if (channels.has(channelId)) {
+    return channels.get(channelId).metadata;
+  }
+  return null;
 }
 
-// API REST pour les statistiques
-app.get('/api/streams', (req, res) => {
-  const activeStreams = [];
+function getAvailableChannels() {
+  const availableChannels = [];
   
-  streams.forEach((stream, streamId) => {
-    if (!deletedStreams.has(streamId)) {
-      activeStreams.push({
-        id: streamId,
-        broadcaster: stream.broadcasterId,
-        viewers: stream.viewers.size,
-        metadata: stream.metadata,
-        isActive: clients.has(stream.broadcasterId)
+  channels.forEach((channel, channelId) => {
+    if (channel.unity && channel.unity.readyState === WebSocket.OPEN) {
+      availableChannels.push({
+        id: channelId,
+        viewerCount: channel.viewers.size,
+        metadata: channel.metadata,
+        active: true
       });
     }
   });
   
-  res.json({
-    success: true,
-    total: activeStreams.length,
-    streams: activeStreams,
-    totalClients: clients.size,
-    timestamp: new Date().toISOString()
-  });
-});
+  return availableChannels;
+}
 
-app.get('/api/stats', (req, res) => {
-  let broadcasters = 0;
-  let viewers = 0;
+function notifyChannelViewers(channelId, message) {
+  if (!channels.has(channelId)) return;
   
-  clients.forEach(client => {
-    if (client.type === 'broadcaster') broadcasters++;
-    else viewers++;
+  const channel = channels.get(channelId);
+  channel.viewers.forEach(viewer => {
+    if (viewer.readyState === WebSocket.OPEN) {
+      viewer.send(JSON.stringify(message));
+    }
   });
-  
-  res.json({
-    clients: {
-      total: clients.size,
-      broadcasters,
-      viewers
+}
+
+// ===== ROUTES HTTP =====
+
+// Route racine
+app.get("/", (req, res) => {
+  res.json({ 
+    status: "WebSocket Streaming Server",
+    message: "Connect using WebSocket protocol",
+    endpoints: {
+      websocket: `ws://${req.headers.host}`,
+      api_channels: `/api/channels`,
+      health: `/health`
     },
-    streams: streams.size,
-    deletedStreams: deletedStreams.size,
-    uptime: process.uptime()
+    stats: {
+      channels: channels.size,
+      totalViewers: Array.from(channels.values()).reduce((sum, ch) => sum + ch.viewers.size, 0)
+    }
   });
 });
 
-// Démarrer le serveur
-server.listen(PORT, () => {
-  console.log(`
-  SERVEUR WEBRTC MULTI-STREAM
-  Port: ${PORT}
-  WebSocket: wss://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
-  API: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}/api/streams
+// Route API REST pour obtenir la liste des canaux
+app.get("/api/channels", (req, res) => {
+  res.json({
+    channels: getAvailableChannels(),
+    timestamp: Date.now()
+  });
+});
+
+// Route de santé
+app.get("/health", (req, res) => {
+  res.json({ 
+    status: "ok", 
+    timestamp: new Date().toISOString(),
+    channels: channels.size,
+    totalViewers: Array.from(channels.values()).reduce((sum, ch) => sum + ch.viewers.size, 0),
+    server: {
+      ip: LOCAL_IP,
+      uptime: process.uptime()
+    }
+  });
+});
+
+// Route pour tester WebSocket via navigateur
+app.get("/test-websocket", (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Test WebSocket</title>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        #output { background: #f5f5f5; padding: 10px; margin: 10px 0; }
+        .success { color: green; }
+        .error { color: red; }
+      </style>
+    </head>
+    <body>
+      <h1>Test WebSocket Connection</h1>
+      <button onclick="testConnection()">Test Connection</button>
+      <div id="output"></div>
+      
+      <script>
+        function testConnection() {
+          const output = document.getElementById('output');
+          output.innerHTML = 'Testing WebSocket connection...';
+          
+          const ws = new WebSocket('ws://' + window.location.host);
+          
+          ws.onopen = () => {
+            output.innerHTML += '<div class="success">✅ WebSocket connected!</div>';
+            ws.send(JSON.stringify({ type: 'test' }));
+          };
+          
+          ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'welcome') {
+              output.innerHTML += '<div class="success">✅ Received welcome message</div>';
+            } else if (msg.type === 'test-response') {
+              output.innerHTML += '<div class="success">✅ Server responded to test</div>';
+              ws.close();
+            }
+          };
+          
+          ws.onerror = (error) => {
+            output.innerHTML += '<div class="error">❌ Connection failed</div>';
+          };
+          
+          ws.onclose = () => {
+            output.innerHTML += '<div>Connection closed</div>';
+          };
+        }
+      </script>
+    </body>
+    </html>
   `);
 });
 
-// Ping pour éviter que Render mette le serveur en veille
-setInterval(() => {
-  wss.clients.forEach((ws) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.ping();
-    }
-  });
-}, 30000);
+const PORT = process.env.PORT || 5000;
+
+// 🔥 Utiliser server.listen() au lieu de app.listen()
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("\n🚀 ===== SERVEUR DÉMARRÉ ===== 🚀");
+  console.log("📡 URLs d'accès:");
+  console.log(`   - IP locale:  http://${LOCAL_IP}:${PORT}`);
+  console.log(`   - Localhost:  http://localhost:${PORT}`);
+  console.log(`   - WebSocket:  ws://${LOCAL_IP}:${PORT}`);
+  console.log(`   - WebSocket:  ws://localhost:${PORT}`);
+  console.log("");
+  console.log("✅ CORS configuré pour accepter TOUTES les origines (*)");
+  console.log("🔓 Toutes les IP peuvent se connecter");
+  console.log("\n🌐 Test WebSocket:");
+  console.log(`   http://localhost:${PORT}/test-websocket`);
+});
