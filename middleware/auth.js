@@ -70,3 +70,51 @@ exports.isOwnerOrAdmin = async (req, res, next) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+exports.refreshSession = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    
+    if (!token || !req.session) {
+      return next();
+    }
+
+    // Vérifier si la session expire bientôt (dans les 30 minutes)
+    const sessionExpiry = new Date(req.session.expires_at);
+    const now = new Date();
+    const timeUntilExpiry = sessionExpiry - now;
+    const thirtyMinutes = 30 * 60 * 1000; // 30 minutes en millisecondes
+
+    if (timeUntilExpiry < thirtyMinutes && timeUntilExpiry > 0) {
+      // Rafraîchir la session
+      const newExpiresAt = new Date();
+      newExpiresAt.setDate(newExpiresAt.getDate() + 7); // 7 jours
+      
+      await pool.query(
+        'UPDATE user_sessions SET expires_at = $1 WHERE token = $2',
+        [newExpiresAt, token]
+      );
+      
+      // Rafraîchir le token JWT si nécessaire
+      const newToken = jwt.sign(
+        { userId: req.user.id, email: req.user.email, role: req.user.role },
+        process.env.JWT_SECRET,
+        { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+      );
+      
+      // Mettre à jour le token dans la session
+      await pool.query(
+        'UPDATE user_sessions SET token = $1 WHERE id = $2',
+        [newToken, req.session.id]
+      );
+      
+      // Ajouter le nouveau token à la réponse
+      res.set('X-New-Token', newToken);
+    }
+    
+    next();
+  } catch (error) {
+    console.error('Erreur lors du rafraîchissement de session:', error);
+    next();
+  }
+};

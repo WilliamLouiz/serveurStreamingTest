@@ -13,16 +13,16 @@ async function initializeDatabase() {
   let client;
   try {
     client = await initPool.connect();
-    
+
     // 1. Créer la base de données si elle n'existe pas
     console.log('Création de la base de données...');
     await client.query(`
       SELECT 'CREATE DATABASE ${process.env.PG_DATABASE}'
       WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${process.env.PG_DATABASE}')
     `);
-    
+
     console.log(' Base de données prête');
-    
+
   } catch (error) {
     console.error(' Erreur lors de l\'initialisation:', error.message);
   } finally {
@@ -44,7 +44,7 @@ async function createTables() {
   const client = await appPool.connect();
   try {
     console.log(' Création des tables...');
-    
+
     // Table users
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -54,6 +54,7 @@ async function createTables() {
         email VARCHAR(255) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
         role VARCHAR(20) NOT NULL CHECK (role IN ('admin', 'formateur', 'stagiaire')),
+        stagiaire_id VARCHAR(50) UNIQUE, -- Nouveau champ pour l'identifiant VR
         is_validated BOOLEAN DEFAULT false,
         validation_token VARCHAR(255),
         token_expires_at TIMESTAMP,
@@ -89,7 +90,7 @@ async function createTables() {
         error_message TEXT
       )
     `);
-    
+
     // Table channels
     await client.query(`
       CREATE TABLE IF NOT EXISTS channels (
@@ -101,7 +102,7 @@ async function createTables() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    
+
     // Table channel_subscriptions
     await client.query(`
       CREATE TABLE IF NOT EXISTS channel_subscriptions (
@@ -112,7 +113,7 @@ async function createTables() {
         UNIQUE(user_id, channel_id)
       )
     `);
-    
+
     // Table streaming_sessions
     await client.query(`
       CREATE TABLE IF NOT EXISTS streaming_sessions (
@@ -125,7 +126,7 @@ async function createTables() {
         avg_frame_size INTEGER DEFAULT 0
       )
     `);
-    
+
     // Table user_sessions
     await client.query(`
       CREATE TABLE IF NOT EXISTS user_sessions (
@@ -147,11 +148,16 @@ async function createTables() {
         'Votre compte a été validé !',
         '<h1>Félicitations {{nom}} {{prenom}} !</h1>
         <p>Votre compte sur notre plateforme de streaming a été validé par l''administrateur.</p>
+        {{#if stagiaire_id}}
+        <p><strong>Votre identifiant unique :</strong> {{stagiaire_id}}</p>
+        <p>Cet identifiant sera utilisé pour vous connecter au casque VR.</p>
+        {{/if}}
         <p>Vous pouvez maintenant vous connecter et accéder à toutes les fonctionnalités.</p>
         <p>Pour vous connecter, cliquez sur le lien suivant :</p>
-        <p><a href="{{login_url}}">Se connecter</a></p>
+        <p><a href="{{login_url}}">Vérifier</a></p>
         <p>Si vous n''avez pas créé de compte, veuillez ignorer cet email.</p>
         <br>
+        <strong>Conservez bien votre identifiant et vos informations de connexion.</strong><br>
         <p>Cordialement,<br>L''équipe de la plateforme</p>'
       ),
       (
@@ -182,7 +188,7 @@ async function createTables() {
       )
       ON CONFLICT (template_name) DO NOTHING
     `);
-    
+
     // Créer un index pour améliorer les performances
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -201,10 +207,10 @@ async function createTables() {
       VALUES ('William', 'NJ', 'njatomiarintsoawilliam@gmail.com', $1, 'admin')
       ON CONFLICT (email) DO NOTHING
     `, [adminPassword]);
-    
+
     console.log(' Tables créées avec succès!');
     console.log(' Compte admin créé: njatomiarintsoawilliam@gmail.com / admin123');
-    
+
   } catch (error) {
     console.error(' Erreur lors de la création des tables:', error);
   } finally {

@@ -8,7 +8,8 @@ const { ROLES } = require('../config/constants');
 router.use(authenticate);
 
 // Récupérer tous les utilisateurs (Admin uniquement)
-router.get('/', authorize(ROLES.ADMIN), userController.getAllUsers);
+router.get('/formateurs', authorize(ROLES.ADMIN), userController.getAllFormateur);
+router.get('/stagiaires', authorize(ROLES.ADMIN), userController.getAllStagiaire);
 
 // Récupérer un utilisateur spécifique
 router.get('/:id', isOwnerOrAdmin, userController.getUserById);

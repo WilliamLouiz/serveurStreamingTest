@@ -4,18 +4,47 @@ const jwt = require('jsonwebtoken');
 const { ROLES, ACCOUNT_STATUS } = require('../config/constants');
 
 class User {
+
+  // Méthode pour générer un ID stagiaire unique
+  static async generateStagiaireId() {
+    const prefix = 'VR';
+    const randomNumber = Math.floor(1000 + Math.random() * 9000); // 4 chiffres
+    const id = `${prefix}${randomNumber}`;
+
+    // Vérifier si l'ID existe déjà
+    const result = await pool.query(
+      'SELECT id FROM users WHERE stagiaire_id = $1',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return id;
+    } else {
+      // Si l'ID existe, régénérer
+      return await this.generateStagiaireId();
+    }
+  }
+
   static async create(userData) {
     const { nom, prenom, email, password, role } = userData;
     const hashedPassword = await bcrypt.hash(password, 10);
-    
+
     // Déterminer si le compte doit être validé automatiquement
     const isAdmin = role === ROLES.ADMIN;
+    const isFormateur = role === ROLES.FORMATEUR;
+    const isStagiaire = role === ROLES.STAGIAIRE;
     const is_validated = isAdmin; // Admin est validé automatiquement
-    
+
+    // Générer un identifiant pour les stagiaires
+    let stagiaire_id = null;
+    if (isStagiaire) {
+      stagiaire_id = await this.generateStagiaireId();
+    }
+
     // Générer un token de validation si pas admin
     let validation_token = null;
     let token_expires_at = null;
-    
+
     if (!isAdmin) {
       validation_token = jwt.sign(
         { email, type: 'validation' },
@@ -24,25 +53,38 @@ class User {
       );
       token_expires_at = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
     }
-    
+
     const result = await pool.query(
       `INSERT INTO users 
-       (nom, prenom, email, password, role, is_validated, validation_token, token_expires_at, status) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
-       RETURNING id, is_validated, validation_token`,
+       (nom, prenom, email, password, role, stagiaire_id, is_validated, validation_token, token_expires_at, status) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
+       RETURNING id, is_validated, validation_token, stagiaire_id`,
       [
-        nom, 
-        prenom, 
-        email, 
-        hashedPassword, 
-        role, 
+        nom,
+        prenom,
+        email,
+        hashedPassword,
+        role,
+        stagiaire_id,
         is_validated,
         validation_token,
         token_expires_at,
         isAdmin ? ACCOUNT_STATUS.VALIDATED : ACCOUNT_STATUS.PENDING
       ]
     );
-    
+
+    return result.rows[0];
+  }
+
+  // Méthode pour trouver un stagiaire par son identifiant
+  static async findByStagiaireId(stagiaireId) {
+    const result = await pool.query(
+      `SELECT id, nom, prenom, email, role, is_validated, status, 
+              validated_at, created_at, stagiaire_id
+       FROM users 
+       WHERE stagiaire_id = $1 AND role = 'stagiaire'`,
+      [stagiaireId]
+    );
     return result.rows[0];
   }
 
@@ -56,9 +98,9 @@ class User {
 
   static async findById(id) {
     const result = await pool.query(
-      `SELECT id, nom, prenom, email, role, is_validated, status, 
-              validated_at, created_at 
-       FROM users WHERE id = $1`,
+      `SELECT id, nom, prenom, email, password, role, is_validated, status, 
+            validated_at, created_at, validation_token, token_expires_at
+     FROM users WHERE id = $1`,
       [id]
     );
     return result.rows[0];
@@ -66,7 +108,7 @@ class User {
 
   static async update(id, userData) {
     const { nom, prenom, email, role, is_validated, status } = userData;
-    
+
     const query = `
       UPDATE users 
       SET nom = $1, prenom = $2, email = $3, role = $4, 
@@ -75,11 +117,11 @@ class User {
           updated_at = CURRENT_TIMESTAMP
       WHERE id = $7 
       RETURNING id`;
-    
+
     const result = await pool.query(query, [
       nom, prenom, email, role, is_validated, status, id
     ]);
-    
+
     return result.rows.length > 0;
   }
 
@@ -96,7 +138,7 @@ class User {
        RETURNING id, email, nom, prenom, role`,
       [userId, validatedBy]
     );
-    
+
     return result.rows[0];
   }
 
@@ -111,7 +153,7 @@ class User {
        RETURNING id, email, nom, prenom`,
       [userId]
     );
-    
+
     // Vous pouvez stocker la raison dans une table séparée si besoin
     return result.rows[0];
   }
@@ -163,12 +205,23 @@ class User {
     return result.rows.length > 0;
   }
 
-  static async getAll() {
+  static async getAllStagiaire() {
     const result = await pool.query(
       `SELECT id, nom, prenom, email, role, is_validated, status, 
               validated_at, created_at 
        FROM users 
-       WHERE role != 'admin'
+       WHERE role = 'stagiaire'
+       ORDER BY created_at DESC`
+    );
+    return result.rows;
+  }
+
+  static async getAllFormateur() {
+    const result = await pool.query(
+      `SELECT id, nom, prenom, email, role, is_validated, status, 
+              validated_at, created_at 
+       FROM users 
+       WHERE role = 'formateur'
        ORDER BY created_at DESC`
     );
     return result.rows;

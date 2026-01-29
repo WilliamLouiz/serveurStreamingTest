@@ -1,19 +1,36 @@
 const User = require('../models/User');
 const { ROLES } = require('../config/constants');
 
-exports.getAllUsers = async (req, res) => {
+exports.getAllStagiaire = async (req, res) => {
   try {
-    const users = await User.getAll();
+    const users = await User.getAllStagiaire();
     res.json({
       success: true,
       users,
       count: users.length
     });
   } catch (error) {
-    console.error('Erreur lors de la récupération des utilisateurs:', error);
+    console.error('Erreur lors de la récupération des Stagiaires:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Erreur lors de la récupération des utilisateurs' 
+      error: 'Erreur lors de la récupération des Stagiaires' 
+    });
+  }
+};
+
+exports.getAllFormateur = async (req, res) => {
+  try {
+    const users = await User.getAllFormateur();
+    res.json({
+      success: true,
+      users,
+      count: users.length
+    });
+  } catch (error) {
+    console.error('Erreur lors de la récupération des Formateurs:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Erreur lors de la récupération des Formateurs' 
     });
   }
 };

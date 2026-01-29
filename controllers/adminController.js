@@ -2,6 +2,7 @@ const User = require('../models/User');
 const EmailService = require('../services/emailService');
 const jwt = require('jsonwebtoken');
 const { ROLES, ACCOUNT_STATUS } = require('../config/constants');
+const pool = require('../config/database'); 
 
 exports.getPendingUsers = async (req, res) => {
   try {
@@ -35,6 +36,20 @@ exports.validateUser = async (req, res) => {
         error: 'Utilisateur non trouvé'
       });
     }
+
+    // Récupérer l'utilisateur complet avec stagiaire_id
+    const fullUser = await User.findById(userId);
+    
+    // Si c'est un stagiaire, s'assurer qu'il a un identifiant
+    let stagiaireId = fullUser.stagiaire_id;
+    if (!stagiaireId && fullUser.role === 'stagiaire') {
+      // Générer un identifiant si pas déjà généré
+      stagiaireId = await User.generateStagiaireId();
+      await pool.query(  
+        'UPDATE users SET stagiaire_id = $1 WHERE id = $2',
+        [stagiaireId, userId]
+      );
+    }
     
     // Générer un token de validation pour l'email
     let validationToken = null;
@@ -46,13 +61,16 @@ exports.validateUser = async (req, res) => {
       );
       
       // Envoyer l'email de validation
-      await EmailService.sendAccountValidatedEmail(user, validationToken);
+      await EmailService.sendAccountValidatedEmail(user, validationToken, stagiaireId);
     }
     
     res.json({
       success: true,
       message: 'Compte validé avec succès',
-      user,
+      user: {
+        ...user,
+        stagiaire_id: stagiaireId
+      },
       email_sent: sendEmail,
       validation_token: sendEmail ? validationToken : null
     });

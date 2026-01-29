@@ -32,7 +32,7 @@ const apiRoutes = require('./routes/apiRoutes');
 app.use('/api', apiRoutes);
 
 //  Créer le WebSocket Server avec 'noServer: true'
-const wss = new WebSocket.Server({ 
+const wss = new WebSocket.Server({
   noServer: true, // Ne pas créer automatiquement le serveur
   perMessageDeflate: false
 });
@@ -41,7 +41,7 @@ const wss = new WebSocket.Server({
 //  Gérer manuellement l'upgrade WebSocket
 server.on('upgrade', (request, socket, head) => {
   console.log(`🔌 Upgrade request for WebSocket`);
-  
+
   // Accepter toutes les connexions WebSocket
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit('connection', ws, request);
@@ -74,7 +74,7 @@ wss.on("connection", (ws, req) => {
   const clientId = Date.now();
   let currentChannel = null;
   let isUnity = false;
-  
+
   console.log(`✅ [${clientId}] WebSocket CONNECTED from ${ip}`);
 
   let expectingFrame = false;
@@ -89,12 +89,12 @@ wss.on("connection", (ws, req) => {
 
   ws.on("message", (msg) => {
     const buffer = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-    
+
     if (buffer.length === 1 && buffer[0] === 0x1E) {
       expectingFrame = true;
       return;
     }
-    
+
     if (expectingFrame && currentFrameMetadata) {
       try {
         broadcastToChannel(currentFrameMetadata.channelId, buffer, currentFrameMetadata);
@@ -105,57 +105,65 @@ wss.on("connection", (ws, req) => {
       }
       return;
     }
-    
+
     try {
       const data = buffer.toString();
       const msgObj = JSON.parse(data);
-      
-      switch(msgObj.type) {
+
+      switch (msgObj.type) {
         case 'unity-register':
           console.log(`🎮 [${clientId}] Unity registering for channel: ${msgObj.channelId}`);
+          console.log(`📋 Métadonnées reçues:`, msgObj.metadata);
+
+          // Vérifier si stagiaireId est présent
+          if (msgObj.metadata && msgObj.metadata.stagiaireId) {
+            console.log(`👤 Stagiaire ID: ${msgObj.metadata.stagiaireId}`);
+          }
+
           registerUnity(ws, msgObj.channelId, msgObj.metadata);
           currentChannel = msgObj.channelId;
           isUnity = true;
-          
-          ws.send(JSON.stringify({ 
-            type: 'register-ack', 
-            channelId: msgObj.channelId 
+
+          ws.send(JSON.stringify({
+            type: 'register-ack',
+            channelId: msgObj.channelId,
+            metadata: msgObj.metadata
           }));
-          
+
           updateViewerCount(msgObj.channelId);
           break;
-          
+
         case 'viewer-subscribe':
           console.log(`👀 [${clientId}] Viewer subscribing to channel: ${msgObj.channelId}`);
           subscribeViewer(ws, msgObj.channelId);
           currentChannel = msgObj.channelId;
-          
-          ws.send(JSON.stringify({ 
-            type: 'subscribe-ack', 
+
+          ws.send(JSON.stringify({
+            type: 'subscribe-ack',
             channelId: msgObj.channelId,
             metadata: getChannelMetadata(msgObj.channelId)
           }));
-          
+
           updateViewerCount(msgObj.channelId);
           break;
-          
+
         case 'viewer-unsubscribe':
           console.log(`👋 [${clientId}] Viewer unsubscribing from channel: ${msgObj.channelId}`);
           unsubscribeViewer(ws, msgObj.channelId);
           currentChannel = null;
           break;
-          
+
         case 'frame':
           currentFrameMetadata = msgObj;
           break;
-          
+
         case 'ping':
-          ws.send(JSON.stringify({ 
+          ws.send(JSON.stringify({
             type: 'pong',
             timestamp: Date.now()
           }));
           break;
-          
+
         case 'list-channels':
           ws.send(JSON.stringify({
             type: 'channels-list',
@@ -163,7 +171,7 @@ wss.on("connection", (ws, req) => {
             timestamp: Date.now()
           }));
           break;
-          
+
         case 'test':
           // Pour tester la connexion
           ws.send(JSON.stringify({
@@ -173,26 +181,26 @@ wss.on("connection", (ws, req) => {
           }));
           break;
       }
-    } catch(e) {
+    } catch (e) {
       console.log(`❓ [${clientId}] Unknown message, length: ${buffer.length} bytes`);
     }
   });
 
   ws.on("close", () => {
     console.log(`❌ [${clientId}] Connection closed`);
-    
+
     if (isUnity && currentChannel) {
       console.log(`🎮 Unity disconnected from channel: ${currentChannel}`);
       removeUnityFromChannel(currentChannel);
-      notifyChannelViewers(currentChannel, { 
-        type: 'unity-disconnected', 
-        channelId: currentChannel 
+      notifyChannelViewers(currentChannel, {
+        type: 'unity-disconnected',
+        channelId: currentChannel
       });
     } else if (currentChannel) {
       console.log(`👋 Viewer disconnected from channel: ${currentChannel}`);
       unsubscribeViewer(ws, currentChannel);
     }
-    
+
     updateViewerCount(currentChannel);
   });
 
@@ -214,21 +222,21 @@ function registerUnity(ws, channelId, metadata) {
     channel.unity = ws;
     channel.metadata = metadata || channel.metadata;
   }
-  
+
   console.log(`✅ Channel '${channelId}' registered/updated`);
 }
 
 function subscribeViewer(ws, channelId) {
   if (!channels.has(channelId)) {
     console.log(`❌ Channel '${channelId}' does not exist`);
-    ws.send(JSON.stringify({ 
-      type: 'subscribe-error', 
+    ws.send(JSON.stringify({
+      type: 'subscribe-error',
       channelId: channelId,
       error: 'Channel does not exist'
     }));
     return;
   }
-  
+
   const channel = channels.get(channelId);
   channel.viewers.add(ws);
   console.log(`✅ Viewer subscribed to channel '${channelId}' (total: ${channel.viewers.size})`);
@@ -254,12 +262,12 @@ function broadcastToChannel(channelId, frameData, metadata) {
     console.log(`❌ Channel '${channelId}' not found for broadcasting`);
     return;
   }
-  
+
   const channel = channels.get(channelId);
   const viewerCount = channel.viewers.size;
-  
+
   if (viewerCount === 0) return;
-  
+
   let sentCount = 0;
   channel.viewers.forEach(viewer => {
     if (viewer.readyState === WebSocket.OPEN) {
@@ -270,31 +278,31 @@ function broadcastToChannel(channelId, frameData, metadata) {
           timestamp: metadata.timestamp,
           frameSize: metadata.frameSize
         }));
-        
+
         viewer.send(Buffer.from([0x1E]));
         viewer.send(frameData);
-        
+
         sentCount++;
-      } catch(e) {
+      } catch (e) {
         console.log(`⚠️ Error sending to viewer on channel '${channelId}':`, e.message);
         channel.viewers.delete(viewer);
       }
     }
   });
-  
+
   if (Math.random() < 0.05) {
-    console.log(`📤 [${channelId}] Sent frame to ${sentCount}/${viewerCount} viewer(s), size: ${Math.round(frameData.length/1024)} KB`);
+    console.log(`📤 [${channelId}] Sent frame to ${sentCount}/${viewerCount} viewer(s), size: ${Math.round(frameData.length / 1024)} KB`);
   }
-  
+
   updateChannelStats(channelId, viewerCount);
 }
 
 function updateViewerCount(channelId) {
   if (!channelId || !channels.has(channelId)) return;
-  
+
   const channel = channels.get(channelId);
   const viewerCount = channel.viewers.size;
-  
+
   if (channel.unity && channel.unity.readyState === WebSocket.OPEN) {
     channel.unity.send(JSON.stringify({
       type: 'viewer-count-update',
@@ -312,7 +320,7 @@ function updateChannelStats(channelId, viewerCount) {
       frameCount: 0
     });
   }
-  
+
   const stats = channelStats.get(channelId);
   stats.viewerCount = viewerCount;
   stats.lastFrameTime = new Date();
@@ -328,7 +336,7 @@ function getChannelMetadata(channelId) {
 
 function getAvailableChannels() {
   const availableChannels = [];
-  
+
   channels.forEach((channel, channelId) => {
     if (channel.unity && channel.unity.readyState === WebSocket.OPEN) {
       availableChannels.push({
@@ -339,13 +347,13 @@ function getAvailableChannels() {
       });
     }
   });
-  
+
   return availableChannels;
 }
 
 function notifyChannelViewers(channelId, message) {
   if (!channels.has(channelId)) return;
-  
+
   const channel = channels.get(channelId);
   channel.viewers.forEach(viewer => {
     if (viewer.readyState === WebSocket.OPEN) {
@@ -358,7 +366,7 @@ function notifyChannelViewers(channelId, message) {
 
 // Route racine
 app.get("/", (req, res) => {
-  res.json({ 
+  res.json({
     status: "WebSocket Streaming Server",
     message: "Connect using WebSocket protocol",
     endpoints: {
@@ -383,8 +391,8 @@ app.get("/api/channels", (req, res) => {
 
 // Route de santé
 app.get("/health", (req, res) => {
-  res.json({ 
-    status: "ok", 
+  res.json({
+    status: "ok",
     timestamp: new Date().toISOString(),
     channels: channels.size,
     totalViewers: Array.from(channels.values()).reduce((sum, ch) => sum + ch.viewers.size, 0),
@@ -450,11 +458,33 @@ app.get("/test-websocket", (req, res) => {
   `);
 });
 
+app.use('/api', (req, res, next) => {
+  // Middleware pour rafraîchir automatiquement les tokens
+  const newToken = res.get('X-New-Token');
+  
+  if (newToken) {
+    // Modifier la réponse pour inclure le nouveau token
+    const originalJson = res.json;
+    res.json = function(data) {
+      if (data && typeof data === 'object') {
+        data.newToken = newToken;
+        data.tokenRefreshed = true;
+      }
+      originalJson.call(this, data);
+    };
+  }
+  
+  next();
+});
+
+const { refreshSession } = require('./middleware/auth');
+app.use('/api', refreshSession);
+
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, "0.0.0.0", async () => {
   const LOCAL_IP = getLocalIP();
-  
+
   console.log("\n ===== SERVEUR DÉMARRÉ ===== 🚀");
   console.log("URLs d'accès:");
   console.log(`   - IP locale:  http://${LOCAL_IP}:${PORT}`);
@@ -462,13 +492,4 @@ server.listen(PORT, "0.0.0.0", async () => {
   console.log(`   - WebSocket:  ws://${LOCAL_IP}:${PORT}`);
   console.log(`   - WebSocket:  ws://localhost:${PORT}`);
   console.log("");
-  console.log(" Base de données: PostgreSQL");
-  console.log(" Système d'authentification: JWT + Sessions");
-  console.log("\n Routes API disponibles:");
-  console.log(`   - POST /api/auth/register`);
-  console.log(`   - POST /api/auth/login`);
-  console.log(`   - GET  /api/auth/profile`);
-  console.log(`   - GET  /api/users`);
-  console.log(`   - GET  /api/channels`);
-  console.log(`   - GET  /health`);
 });

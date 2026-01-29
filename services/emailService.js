@@ -60,33 +60,33 @@ class EmailService {
 
       // Envoyer l'email
       const info = await this.transporter.sendMail(mailOptions);
-      
+
       // Logger le succès
       await this.logEmail(userId, templateName, recipientEmail, subject, 'sent');
-      
+
       console.log(` Email envoyé à ${recipientEmail}: ${info.messageId}`);
       return { success: true, messageId: info.messageId };
-      
+
     } catch (error) {
       console.error(` Erreur lors de l'envoi d'email à ${recipientEmail}:`, error.message);
-      
+
       // Logger l'erreur
       await this.logEmail(
-        userId, 
-        templateName, 
-        recipientEmail, 
-        subject || templateName, 
-        'failed', 
+        userId,
+        templateName,
+        recipientEmail,
+        subject || templateName,
+        'failed',
         error.message
       );
-      
+
       return { success: false, error: error.message };
     }
   }
 
   async sendAccountValidatedEmail(user, token) {
     const verificationUrl = `${process.env.FRONTEND_URL}/verify-account?token=${token}`;
-    
+
     return await this.sendEmail('account_validated', user.email, {
       nom: user.nom,
       prenom: user.prenom,
@@ -112,6 +112,25 @@ class EmailService {
       prenom: user.prenom,
       rejection_reason: reason || 'Non spécifiée'
     }, user.id);
+  }
+
+  async sendAccountValidatedEmail(user, token, stagiaireId = null) {
+    const verificationUrl = `${process.env.FRONTEND_URL}/verify-account?token=${token}`;
+
+    // Préparer les variables pour le template
+    const variables = {
+      nom: user.nom,
+      prenom: user.prenom,
+      login_url: verificationUrl,
+      admin_name: 'Administrateur'
+    };
+
+    // Ajouter l'identifiant stagiaire si présent
+    if (stagiaireId) {
+      variables.stagiaire_id = stagiaireId;
+    }
+
+    return await this.sendEmail('account_validated', user.email, variables, user.id);
   }
 }
 

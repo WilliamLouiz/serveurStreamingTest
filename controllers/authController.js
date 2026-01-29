@@ -152,7 +152,7 @@ exports.login = async (req, res) => {
     expiresAt.setDate(expiresAt.getDate() + 7);
 
     // Désactiver les anciennes sessions de l'utilisateur
-    await Session.deactivateAllUserSessions(user.id);
+    // await Session.deactivateAllUserSessions(user.id);
 
     // Créer une nouvelle session
     await Session.create(user.id, token, expiresAt);
