@@ -132,6 +132,17 @@ class EmailService {
 
     return await this.sendEmail('account_validated', user.email, variables, user.id);
   }
+
+  async sendPasswordResetEmail(user, resetToken) {
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+
+    return await this.sendEmail('password_reset', user.email, {
+      nom: user.nom,
+      prenom: user.prenom,
+      reset_url: resetUrl
+    }, user.id);
+  }
+
 }
 
 module.exports = new EmailService();

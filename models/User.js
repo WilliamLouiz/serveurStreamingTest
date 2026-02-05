@@ -207,7 +207,7 @@ class User {
 
   static async getAllStagiaire() {
     const result = await pool.query(
-      `SELECT id, nom, prenom, email, role, is_validated, status, 
+      `SELECT id, nom, prenom, email, stagiaire_id, role, is_validated, status, 
               validated_at, created_at 
        FROM users 
        WHERE role = 'stagiaire'
@@ -255,6 +255,81 @@ class User {
     `);
     return result.rows;
   }
+
+  static async findByResetToken(tokenHash) {
+    const result = await pool.query(
+      `SELECT id, email, nom, prenom, reset_password_expires 
+       FROM users 
+       WHERE reset_password_token = $1 AND reset_password_expires > NOW()`,
+      [tokenHash]
+    );
+    return result.rows[0];
+  }
+
+  // Méthode pour mettre à jour le token de réinitialisation
+  static async updateResetToken(userId, tokenHash, expiresAt) {
+    const result = await pool.query(
+      `UPDATE users 
+       SET reset_password_token = $1, 
+           reset_password_expires = $2,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3 
+       RETURNING id, email, nom, prenom`,
+      [tokenHash, expiresAt, userId]
+    );
+    return result.rows[0];
+  }
+
+  //méthode pour trouver un utilisateur par token de réinitialisation
+  static async findByResetToken(tokenHash) {
+    const result = await pool.query(
+      `SELECT id, email, nom, prenom, reset_password_expires 
+     FROM users 
+     WHERE reset_password_token = $1 AND reset_password_expires > NOW()`,
+      [tokenHash]
+    );
+    return result.rows[0];
+  }
+
+  // Méthode pour mettre à jour le token de réinitialisation
+  static async updateResetToken(userId, tokenHash, expiresAt) {
+    const result = await pool.query(
+      `UPDATE users 
+     SET reset_password_token = $1, 
+         reset_password_expires = $2,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $3 
+     RETURNING id, email, nom, prenom`,
+      [tokenHash, expiresAt, userId]
+    );
+    return result.rows[0];
+  }
+
+  // Méthode pour réinitialiser le mot de passe
+  static async resetPassword(userId, newPassword) {
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const result = await pool.query(
+      `UPDATE users 
+     SET password = $1, 
+         reset_password_token = NULL,
+         reset_password_expires = NULL,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $2 
+     RETURNING id, email, nom, prenom`,
+      [hashedPassword, userId]
+    );
+    return result.rows[0];
+  }
+
+  // Méthode pour vérifier si l'email existe
+  static async emailExists(email) {
+    const result = await pool.query(
+      'SELECT id, email, nom, prenom FROM users WHERE email = $1',
+      [email]
+    );
+    return result.rows[0];
+  }
+
 }
 
 module.exports = User;

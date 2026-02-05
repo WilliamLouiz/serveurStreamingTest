@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Session = require('../models/Session');
 const EmailService = require('../services/emailService');
 const { ROLES, ACCOUNT_STATUS } = require('../config/constants');
+const crypto = require('crypto');
 
 exports.register = async (req, res) => {
   try {
@@ -185,8 +186,6 @@ exports.login = async (req, res) => {
   }
 };
 
-// ... autres méthodes existantes ...
-
 exports.verifyAccount = async (req, res) => {
   try {
     const { token } = req.body;
@@ -359,6 +358,173 @@ exports.logout = async (req, res) => {
     res.status(500).json({ 
       success: false, 
       error: 'Erreur lors de la déconnexion' 
+    });
+  }
+};
+
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email requis'
+      });
+    }
+
+    // Vérifier si l'utilisateur existe
+    const user = await User.emailExists(email);
+    if (!user) {
+      // Pour des raisons de sécurité, ne pas révéler si l'email existe ou non
+      return res.json({
+        success: true,
+        message: 'Si un compte existe avec cet email, vous recevrez un lien de réinitialisation'
+      });
+    }
+
+    // Générer un token de réinitialisation
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+    
+    // Définir l'expiration (1 heure)
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    
+    // Sauvegarder le token dans la base de données
+    await User.updateResetToken(user.id, tokenHash, expiresAt);
+    
+    // Créer l'URL de réinitialisation
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+    
+    // Envoyer l'email de réinitialisation
+    await EmailService.sendEmail('password_reset', user.email, {
+      nom: user.nom,
+      prenom: user.prenom,
+      reset_url: resetUrl
+    }, user.id);
+    
+    res.json({
+      success: true,
+      message: 'Un lien de réinitialisation a été envoyé à votre adresse email'
+    });
+    
+  } catch (error) {
+    console.error('Erreur lors de la demande de réinitialisation:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du traitement de la demande'
+    });
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const { token, newPassword, confirmPassword } = req.body;
+    
+    // Validation
+    if (!token || !newPassword || !confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token, nouveau mot de passe et confirmation requis'
+      });
+    }
+    
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Les mots de passe ne correspondent pas'
+      });
+    }
+    
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Le mot de passe doit contenir au moins 6 caractères'
+      });
+    }
+    
+    // Hasher le token pour la comparaison
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    
+    // Trouver l'utilisateur avec ce token valide
+    const user = await User.findByResetToken(tokenHash);
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token invalide ou expiré'
+      });
+    }
+    
+    // Mettre à jour le mot de passe
+    const updatedUser = await User.resetPassword(user.id, newPassword);
+    
+    // Envoyer une notification
+    await EmailService.sendEmail('password_changed', user.email, {
+      nom: user.nom,
+      prenom: user.prenom
+    }, user.id);
+    
+    res.json({
+      success: true,
+      message: 'Mot de passe réinitialisé avec succès. Vous pouvez maintenant vous connecter.',
+      user: {
+        id: updatedUser.id,
+        email: updatedUser.email,
+        nom: updatedUser.nom,
+        prenom: updatedUser.prenom
+      }
+    });
+    
+  } catch (error) {
+    console.error('Erreur lors de la réinitialisation du mot de passe:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la réinitialisation du mot de passe'
+    });
+  }
+};
+
+exports.verifyResetToken = async (req, res) => {
+  try {
+    const { token } = req.params;
+    
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token requis'
+      });
+    }
+    
+    // Hasher le token pour la comparaison
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    
+    // Vérifier si le token est valide
+    const user = await User.findByResetToken(tokenHash);
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        valid: false,
+        error: 'Token invalide ou expiré'
+      });
+    }
+    
+    res.json({
+      success: true,
+      valid: true,
+      message: 'Token valide',
+      user: {
+        email: user.email,
+        nom: user.nom,
+        prenom: user.prenom
+      }
+    });
+    
+  } catch (error) {
+    console.error('Erreur lors de la vérification du token:', error);
+    res.status(500).json({
+      success: false,
+      valid: false,
+      error: 'Erreur lors de la vérification du token'
     });
   }
 };

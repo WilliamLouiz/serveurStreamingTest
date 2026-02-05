@@ -3,6 +3,7 @@ const http = require("http");
 const WebSocket = require("ws");
 const cors = require("cors");
 const os = require("os");
+const pool = require('./config/database');
 
 const app = express();
 
@@ -37,6 +38,28 @@ const wss = new WebSocket.Server({
   perMessageDeflate: false
 });
 
+// Vérifier périodiquement les canaux actifs
+setInterval(() => {
+  const now = Date.now();
+  channels.forEach((channel, channelId) => {
+    if (channel.unity && channel.unity.readyState === WebSocket.OPEN) {
+      // Mettre à jour lastPing
+      channel.lastPing = now;
+
+      // Envoyer un ping pour garder la connexion active
+      try {
+        channel.unity.send(JSON.stringify({ type: 'ping', timestamp: now }));
+      } catch (e) {
+        console.log(`⚠️ Erreur ping channel ${channelId}:`, e.message);
+      }
+    } else if (channel.unity && channel.unity.readyState !== WebSocket.OPEN) {
+      // Nettoyer les channels avec Unity déconnecté
+      console.log(`🗑️ Nettoyage channel ${channelId} - Unity déconnecté`);
+      channels.delete(channelId);
+      broadcastChannelsList();
+    }
+  });
+}, 30000);
 
 //  Gérer manuellement l'upgrade WebSocket
 server.on('upgrade', (request, socket, head) => {
@@ -87,7 +110,7 @@ wss.on("connection", (ws, req) => {
     timestamp: Date.now()
   }));
 
-  ws.on("message", (msg) => {
+  ws.on("message", async (msg) => {
     const buffer = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
 
     if (buffer.length === 1 && buffer[0] === 0x1E) {
@@ -111,27 +134,145 @@ wss.on("connection", (ws, req) => {
       const msgObj = JSON.parse(data);
 
       switch (msgObj.type) {
-        case 'unity-register':
-          console.log(`🎮 [${clientId}] Unity registering for channel: ${msgObj.channelId}`);
-          console.log(`📋 Métadonnées reçues:`, msgObj.metadata);
+        case 'unity-register': {
+          const { channelId, userId, metadata } = msgObj;
 
-          // Vérifier si stagiaireId est présent
-          if (msgObj.metadata && msgObj.metadata.stagiaireId) {
-            console.log(`👤 Stagiaire ID: ${msgObj.metadata.stagiaireId}`);
+          console.log(`🎮 [${clientId}] Unity registering for channel: ${channelId}`);
+          console.log(`👤 User ID reçu: ${userId}`);
+
+          // Vérifier userId
+          if (!userId) {
+            console.log(`❌ Pas de User ID fourni`);
+            ws.send(JSON.stringify({
+              type: 'register-error',
+              channelId: channelId,
+              error: 'User ID requis'
+            }));
+            return;
           }
 
-          registerUnity(ws, msgObj.channelId, msgObj.metadata);
-          currentChannel = msgObj.channelId;
-          isUnity = true;
+          try {
+            // Recherche du stagiaire
+            console.log(`🔍 Recherche stagiaire_id: ${userId}`);
 
-          ws.send(JSON.stringify({
-            type: 'register-ack',
-            channelId: msgObj.channelId,
-            metadata: msgObj.metadata
-          }));
+            let userInfo = null;
+            let isAuthenticated = false;
 
-          updateViewerCount(msgObj.channelId);
+            // Si la base de données n'est pas disponible, fallback
+            if (!pool) {
+              console.log('⚠️ Base de données non disponible, mode fallback');
+              userInfo = {
+                nom: 'Utilisateur',
+                prenom: 'Test',
+                stagiaire_id: userId,
+                status: 'validated'
+              };
+              isAuthenticated = true;
+            } else {
+              try {
+                const result = await pool.query(
+                  `SELECT id, nom, prenom, email, stagiaire_id, status
+           FROM users
+           WHERE stagiaire_id = $1
+             AND role = 'stagiaire'
+             AND status = 'validated'`,
+                  [userId]
+                );
+
+                if (result.rows.length > 0) {
+                  const user = result.rows[0];
+                  userInfo = {
+                    id: user.id,
+                    nom: user.nom,
+                    prenom: user.prenom,
+                    email: user.email,
+                    stagiaire_id: user.stagiaire_id
+                  };
+                  isAuthenticated = true;
+                  console.log(`✅ Stagiaire trouvé: ${user.prenom} ${user.nom}`);
+                } else {
+                  console.log(`❌ Aucun stagiaire validé avec stagiaire_id: ${userId}`);
+                }
+              } catch (dbError) {
+                console.error(`🔥 Erreur base de données:`, dbError.message);
+                // Fallback en cas d'erreur DB
+                userInfo = {
+                  nom: 'Utilisateur',
+                  prenom: 'Fallback',
+                  stagiaire_id: userId,
+                  status: 'unknown'
+                };
+                isAuthenticated = true; // Accepter quand même pour éviter de bloquer
+              }
+            }
+
+            // 3️⃣ Créer/updater le channel
+            const channel = {
+              unity: ws,
+              viewers: new Set(),
+              metadata: metadata || {},
+              userId: userId,
+              user: userInfo,
+              authenticated: isAuthenticated,
+              active: isAuthenticated,
+              lastPing: Date.now()
+            };
+
+            channels.set(channelId, channel);
+
+            // 4️⃣ Répondre à Unity
+            if (isAuthenticated) {
+              ws.send(JSON.stringify({
+                type: 'register-ack',
+                channelId: channelId,
+                userId: userId,
+                authenticated: true,
+                user: userInfo,
+                message: 'Channel enregistré avec succès'
+              }));
+
+              console.log(`✅ Channel '${channelId}' enregistré`);
+
+              // Mettre à jour la liste pour les viewers
+              broadcastChannelsList();
+
+            } else {
+              ws.send(JSON.stringify({
+                type: 'register-error',
+                channelId: channelId,
+                authenticated: false,
+                error: 'Identifiant utilisateur invalide',
+                message: 'Authentification requise'
+              }));
+
+              console.log(`❌ Channel '${channelId}' refusé - ID invalide`);
+
+              // Supprimer le channel non authentifié
+              channels.delete(channelId);
+
+              // Fermer la connexion
+              setTimeout(() => {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.close(1008, 'Authentication failed');
+                }
+              }, 1000);
+            }
+
+            // Mettre à jour les variables de la connexion
+            currentChannel = channelId;
+            isUnity = true;
+
+          } catch (error) {
+            console.error(`🔥 Erreur lors de l'enregistrement:`, error);
+
+            ws.send(JSON.stringify({
+              type: 'register-error',
+              channelId: channelId,
+              error: 'Erreur serveur'
+            }));
+          }
           break;
+        }
 
         case 'viewer-subscribe':
           console.log(`👀 [${clientId}] Viewer subscribing to channel: ${msgObj.channelId}`);
@@ -226,9 +367,60 @@ function registerUnity(ws, channelId, metadata) {
   console.log(`✅ Channel '${channelId}' registered/updated`);
 }
 
+function broadcastChannelsList() {
+  const availableChannels = getAvailableChannels();
+  const message = JSON.stringify({
+    type: 'channels-list',
+    channels: availableChannels,
+    timestamp: Date.now()
+  });
+
+  console.log(`📢 Diffusion liste canaux (${availableChannels.length} canaux)`);
+
+  // Envoyer à tous les clients connectés SAUF les Unity
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      // Vérifier si ce client est une connexion Unity
+      let isUnity = false;
+
+      // Parcourir tous les canaux pour vérifier si ce client est un Unity
+      channels.forEach((channel, channelId) => {
+        if (channel.unity === client) {
+          isUnity = true;
+        }
+      });
+
+      // Ne pas envoyer la liste aux Unity
+      if (!isUnity) {
+        try {
+          client.send(message);
+        } catch (e) {
+          console.log(`⚠️ Erreur envoi liste à client:`, e.message);
+        }
+      }
+    }
+  });
+}
+
+let dbConnected = false;
+async function testDatabaseConnection() {
+  try {
+    if (pool) {
+      await pool.query('SELECT 1');
+      dbConnected = true;
+      console.log(' Base de données connectée');
+    }
+  } catch (error) {
+    dbConnected = false;
+    console.log(' Base de données non disponible, mode fallback activé');
+  }
+}
+testDatabaseConnection();
+
+
 function subscribeViewer(ws, channelId) {
   if (!channels.has(channelId)) {
-    console.log(`❌ Channel '${channelId}' does not exist`);
+    console.log(` Channel '${channelId}' does not exist`);
     ws.send(JSON.stringify({
       type: 'subscribe-error',
       channelId: channelId,
@@ -239,27 +431,27 @@ function subscribeViewer(ws, channelId) {
 
   const channel = channels.get(channelId);
   channel.viewers.add(ws);
-  console.log(`✅ Viewer subscribed to channel '${channelId}' (total: ${channel.viewers.size})`);
+  console.log(` Viewer subscribed to channel '${channelId}' (total: ${channel.viewers.size})`);
 }
 
 function unsubscribeViewer(ws, channelId) {
   if (channels.has(channelId)) {
     const channel = channels.get(channelId);
     channel.viewers.delete(ws);
-    console.log(`✅ Viewer unsubscribed from channel '${channelId}' (remaining: ${channel.viewers.size})`);
+    console.log(` Viewer unsubscribed from channel '${channelId}' (remaining: ${channel.viewers.size})`);
   }
 }
 
 function removeUnityFromChannel(channelId) {
   if (channels.has(channelId)) {
     channels.delete(channelId);
-    console.log(`🗑️ Channel '${channelId}' removed (no Unity source)`);
+    console.log(` Channel '${channelId}' removed (no Unity source)`);
   }
 }
 
 function broadcastToChannel(channelId, frameData, metadata) {
   if (!channels.has(channelId)) {
-    console.log(`❌ Channel '${channelId}' not found for broadcasting`);
+    console.log(` Channel '${channelId}' not found for broadcasting`);
     return;
   }
 
@@ -284,14 +476,14 @@ function broadcastToChannel(channelId, frameData, metadata) {
 
         sentCount++;
       } catch (e) {
-        console.log(`⚠️ Error sending to viewer on channel '${channelId}':`, e.message);
+        console.log(` Error sending to viewer on channel '${channelId}':`, e.message);
         channel.viewers.delete(viewer);
       }
     }
   });
 
   if (Math.random() < 0.05) {
-    console.log(`📤 [${channelId}] Sent frame to ${sentCount}/${viewerCount} viewer(s), size: ${Math.round(frameData.length / 1024)} KB`);
+    console.log(`[${channelId}] Sent frame to ${sentCount}/${viewerCount} viewer(s), size: ${Math.round(frameData.length / 1024)} KB`);
   }
 
   updateChannelStats(channelId, viewerCount);
@@ -338,12 +530,15 @@ function getAvailableChannels() {
   const availableChannels = [];
 
   channels.forEach((channel, channelId) => {
-    if (channel.unity && channel.unity.readyState === WebSocket.OPEN) {
+    if (channel.unity && channel.unity.readyState === WebSocket.OPEN && channel.active) {
       availableChannels.push({
         id: channelId,
+        userId: channel.userId,
+        user: channel.user, // Inclure les infos utilisateur complètes
+        authenticated: channel.authenticated,
         viewerCount: channel.viewers.size,
         metadata: channel.metadata,
-        active: true
+        active: channel.active
       });
     }
   });
@@ -461,11 +656,11 @@ app.get("/test-websocket", (req, res) => {
 app.use('/api', (req, res, next) => {
   // Middleware pour rafraîchir automatiquement les tokens
   const newToken = res.get('X-New-Token');
-  
+
   if (newToken) {
     // Modifier la réponse pour inclure le nouveau token
     const originalJson = res.json;
-    res.json = function(data) {
+    res.json = function (data) {
       if (data && typeof data === 'object') {
         data.newToken = newToken;
         data.tokenRefreshed = true;
@@ -473,7 +668,7 @@ app.use('/api', (req, res, next) => {
       originalJson.call(this, data);
     };
   }
-  
+
   next();
 });
 

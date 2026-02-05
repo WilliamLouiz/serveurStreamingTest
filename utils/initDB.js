@@ -54,12 +54,14 @@ async function createTables() {
         email VARCHAR(255) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
         role VARCHAR(20) NOT NULL CHECK (role IN ('admin', 'formateur', 'stagiaire')),
-        stagiaire_id VARCHAR(50) UNIQUE, -- Nouveau champ pour l'identifiant VR
+        stagiaire_id VARCHAR(50) UNIQUE,
         is_validated BOOLEAN DEFAULT false,
         validation_token VARCHAR(255),
         token_expires_at TIMESTAMP,
         validated_at TIMESTAMP,
         validated_by INTEGER REFERENCES users(id),
+        reset_password_token VARCHAR(255),
+        reset_password_expires TIMESTAMP,
         status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'validated', 'rejected', 'suspended')),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -183,6 +185,29 @@ async function createTables() {
         <p>Votre demande de création de compte sur notre plateforme de streaming a été rejetée.</p>
         <p>Raison : {{rejection_reason}}</p>
         <p>Si vous pensez qu''il s''agit d''une erreur, veuillez contacter l''administrateur.</p>
+        <br>
+        <p>Cordialement,<br>L''équipe de la plateforme</p>'
+      ),
+      (
+        'password_reset',
+        'Réinitialisation de votre mot de passe',
+        '<h1>Réinitialisation de mot de passe</h1>
+        <p>Bonjour {{nom}} {{prenom}},</p>
+        <p>Vous avez demandé la réinitialisation de votre mot de passe.</p>
+        <p>Cliquez sur le lien suivant pour définir un nouveau mot de passe :</p>
+        <p><a href="{{reset_url}}">Réinitialiser mon mot de passe</a></p>
+        <p>Ce lien expirera dans 1 heure.</p>
+        <p>Si vous n''avez pas demandé cette réinitialisation, veuillez ignorer cet email.</p>
+        <br>
+        <p>Cordialement,<br>L''équipe de la plateforme</p>'
+      ),
+      (
+        'password_changed',
+        'Votre mot de passe a été modifié',
+        '<h1>Mot de passe modifié</h1>
+        <p>Bonjour {{nom}} {{prenom}},</p>
+        <p>Votre mot de passe a été modifié avec succès.</p>
+        <p>Si vous n''avez pas effectué cette modification, veuillez contacter immédiatement l''administrateur.</p>
         <br>
         <p>Cordialement,<br>L''équipe de la plateforme</p>'
       )
