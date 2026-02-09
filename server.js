@@ -4,8 +4,20 @@ const WebSocket = require("ws");
 const cors = require("cors");
 const os = require("os");
 const pool = require('./config/database');
+const apiRoutes = require('./routes/apiRoutes');
+const NotificationService = require('./services/notificationService');
+require('./jobs/cleanupReplays');
+const {
+  startRecording,
+  saveFrame,
+  stopRecording
+} = require('./services/streamRecorder');
 
-const app = express();
+const path = require('path');
+
+const app = express({
+  maxHeaderSize: 64 * 1024 // 64 KB
+});
 
 app.use(express.json());
 
@@ -29,7 +41,10 @@ app.use((req, res, next) => {
   next();
 });
 
-const apiRoutes = require('./routes/apiRoutes');
+app.use('/recordings', express.static(
+  path.join(__dirname, 'recordings')
+));
+
 app.use('/api', apiRoutes);
 
 //  Créer le WebSocket Server avec 'noServer: true'
@@ -50,11 +65,11 @@ setInterval(() => {
       try {
         channel.unity.send(JSON.stringify({ type: 'ping', timestamp: now }));
       } catch (e) {
-        console.log(`⚠️ Erreur ping channel ${channelId}:`, e.message);
+        console.log(` Erreur ping channel ${channelId}:`, e.message);
       }
     } else if (channel.unity && channel.unity.readyState !== WebSocket.OPEN) {
       // Nettoyer les channels avec Unity déconnecté
-      console.log(`🗑️ Nettoyage channel ${channelId} - Unity déconnecté`);
+      console.log(` Nettoyage channel ${channelId} - Unity déconnecté`);
       channels.delete(channelId);
       broadcastChannelsList();
     }
@@ -119,13 +134,16 @@ wss.on("connection", (ws, req) => {
     }
 
     if (expectingFrame && currentFrameMetadata) {
-      try {
-        broadcastToChannel(currentFrameMetadata.channelId, buffer, currentFrameMetadata);
-        expectingFrame = false;
-        currentFrameMetadata = null;
-      } catch (e) {
-        console.log(`❌ [${clientId}] Error broadcasting frame:`, e.message);
-      }
+      saveFrame(currentFrameMetadata.channelId, buffer);
+
+      broadcastToChannel(
+        currentFrameMetadata.channelId,
+        buffer,
+        currentFrameMetadata
+      );
+
+      expectingFrame = false;
+      currentFrameMetadata = null;
       return;
     }
 
@@ -137,12 +155,12 @@ wss.on("connection", (ws, req) => {
         case 'unity-register': {
           const { channelId, userId, metadata } = msgObj;
 
-          console.log(`🎮 [${clientId}] Unity registering for channel: ${channelId}`);
-          console.log(`👤 User ID reçu: ${userId}`);
+          console.log(` [${clientId}] Unity registering for channel: ${channelId}`);
+          console.log(` User ID reçu: ${userId}`);
 
           // Vérifier userId
           if (!userId) {
-            console.log(`❌ Pas de User ID fourni`);
+            console.log(` Pas de User ID fourni`);
             ws.send(JSON.stringify({
               type: 'register-error',
               channelId: channelId,
@@ -153,14 +171,14 @@ wss.on("connection", (ws, req) => {
 
           try {
             // Recherche du stagiaire
-            console.log(`🔍 Recherche stagiaire_id: ${userId}`);
+            console.log(` Recherche stagiaire_id: ${userId}`);
 
             let userInfo = null;
             let isAuthenticated = false;
 
             // Si la base de données n'est pas disponible, fallback
             if (!pool) {
-              console.log('⚠️ Base de données non disponible, mode fallback');
+              console.log(' Base de données non disponible, mode fallback');
               userInfo = {
                 nom: 'Utilisateur',
                 prenom: 'Test',
@@ -189,12 +207,12 @@ wss.on("connection", (ws, req) => {
                     stagiaire_id: user.stagiaire_id
                   };
                   isAuthenticated = true;
-                  console.log(`✅ Stagiaire trouvé: ${user.prenom} ${user.nom}`);
+                  console.log(` Stagiaire trouvé: ${user.prenom} ${user.nom}`);
                 } else {
-                  console.log(`❌ Aucun stagiaire validé avec stagiaire_id: ${userId}`);
+                  console.log(` Aucun stagiaire validé avec stagiaire_id: ${userId}`);
                 }
               } catch (dbError) {
-                console.error(`🔥 Erreur base de données:`, dbError.message);
+                console.error(` Erreur base de données:`, dbError.message);
                 // Fallback en cas d'erreur DB
                 userInfo = {
                   nom: 'Utilisateur',
@@ -206,7 +224,7 @@ wss.on("connection", (ws, req) => {
               }
             }
 
-            // 3️⃣ Créer/updater le channel
+            // Créer/updater le channel
             const channel = {
               unity: ws,
               viewers: new Set(),
@@ -220,8 +238,75 @@ wss.on("connection", (ws, req) => {
 
             channels.set(channelId, channel);
 
-            // 4️⃣ Répondre à Unity
+            //  Répondre à Unity
             if (isAuthenticated) {
+              // pour notifier le formateur qu'un stagiaire est connecté
+              if (userInfo && userInfo.id) {
+                try {
+                  // 1. D'abord, trouver l'ID du stagiaire dans la table users
+                  const stagiaireResult = await pool.query(
+                    'SELECT id FROM users WHERE stagiaire_id = $1',
+                    [userId]
+                  );
+
+                  if (stagiaireResult.rows.length > 0) {
+                    const stagiaireUserId = stagiaireResult.rows[0].id;
+
+                    // 2. Maintenant trouver le formateur de ce stagiaire
+                    const formateurResult = await pool.query(
+                      `SELECT formateur_id 
+         FROM encadrements 
+         WHERE stagiaire_id = $1`,
+                      [stagiaireUserId]
+                    );
+                    if (formateurResult.rows.length > 0) {
+                      const formateur_id = formateurResult.rows[0].formateur_id;
+
+                      // Vérifier si le formateur existe
+                      const formateurCheck = await pool.query(
+                        'SELECT id, nom, prenom FROM users WHERE id = $1',
+                        [formateur_id]
+                      );
+
+                      const notificationResult = await NotificationService.notifyFormateurStagiaireConnected(
+                        formateur_id,
+                        `${userInfo.prenom} ${userInfo.nom}`,
+                        channelId
+                      );
+
+                      if (notificationResult.success) {
+                        console.log("Notification créée avec succès");
+                      } else {
+                        console.log("Échec création notification");
+                        console.log(`   Erreur: ${notificationResult.error}`);
+                      }
+                    } else {
+                      console.log(`Aucun formateur trouvé dans encadrements pour stagiaire_id = ${stagiaireUserId}`);
+
+                      // Vérifier ce qu'il y a dans la table encadrements
+                      const allEncadrements = await pool.query(
+                        'SELECT * FROM encadrements LIMIT 10'
+                      );
+                      console.log(`Contenu table encadrements:`, JSON.stringify(allEncadrements.rows, null, 2));
+                    }
+                  } else {
+                    console.log(`Aucun utilisateur trouvé avec stagiaire_id = ${userId}`);
+                  }
+
+                } catch (notifError) {
+                  console.error(" Erreur détaillée notification formateur:");
+                  console.error("   Message:", notifError.message);
+                  console.error("   Code:", notifError.code);
+                  console.error("   Stack:", notifError.stack);
+
+                  if (notifError.code === '23503') {
+                    console.error("   ERREUR: Violation de clé étrangère!");
+                  }
+                  if (notifError.code === '23505') {
+                    console.error("   ERREUR: Violation d'unicité!");
+                  }
+                }
+              }
               ws.send(JSON.stringify({
                 type: 'register-ack',
                 channelId: channelId,
@@ -231,7 +316,9 @@ wss.on("connection", (ws, req) => {
                 message: 'Channel enregistré avec succès'
               }));
 
-              console.log(`✅ Channel '${channelId}' enregistré`);
+              console.log(` Channel '${channelId}' enregistré`);
+
+              startRecording(channelId, userId);
 
               // Mettre à jour la liste pour les viewers
               broadcastChannelsList();
@@ -245,7 +332,7 @@ wss.on("connection", (ws, req) => {
                 message: 'Authentification requise'
               }));
 
-              console.log(`❌ Channel '${channelId}' refusé - ID invalide`);
+              console.log(` Channel '${channelId}' refusé - ID invalide`);
 
               // Supprimer le channel non authentifié
               channels.delete(channelId);
@@ -263,7 +350,7 @@ wss.on("connection", (ws, req) => {
             isUnity = true;
 
           } catch (error) {
-            console.error(`🔥 Erreur lors de l'enregistrement:`, error);
+            console.error(` Erreur lors de l'enregistrement:`, error);
 
             ws.send(JSON.stringify({
               type: 'register-error',
@@ -275,7 +362,7 @@ wss.on("connection", (ws, req) => {
         }
 
         case 'viewer-subscribe':
-          console.log(`👀 [${clientId}] Viewer subscribing to channel: ${msgObj.channelId}`);
+          console.log(` [${clientId}] Viewer subscribing to channel: ${msgObj.channelId}`);
           subscribeViewer(ws, msgObj.channelId);
           currentChannel = msgObj.channelId;
 
@@ -323,22 +410,56 @@ wss.on("connection", (ws, req) => {
           break;
       }
     } catch (e) {
-      console.log(`❓ [${clientId}] Unknown message, length: ${buffer.length} bytes`);
+      console.log(` [${clientId}] Unknown message, length: ${buffer.length} bytes`);
     }
   });
 
-  ws.on("close", () => {
-    console.log(`❌ [${clientId}] Connection closed`);
+  ws.on("close", async () => {
+    console.log(` [${clientId}] Connection closed`);
 
     if (isUnity && currentChannel) {
-      console.log(`🎮 Unity disconnected from channel: ${currentChannel}`);
+      console.log(` Unity disconnected from channel: ${currentChannel}`);
+      const replay = await stopRecording(currentChannel);
+
+      if (replay) {
+        try {
+          // Trouver l'ID utilisateur
+          const userResult = await pool.query(
+            'SELECT id FROM users WHERE stagiaire_id = $1',
+            [replay.stagiaireId]
+          );
+
+          if (userResult.rows.length > 0) {
+            const userId = userResult.rows[0].id;
+
+            // Version simplifiée sans sous-requête
+            await pool.query(`
+              INSERT INTO streams_replay
+                (user_id, stagiaire_id, channel_id, file_path, expires_at)
+              VALUES ($1, $2, $3, $4, NOW() + INTERVAL '24 hours')
+            `, [
+              userId,              // user_id (INTEGER)
+              replay.stagiaireId,  // stagiaire_id (VARCHAR) - l'identifiant VR
+              replay.channelId,    // channel_id (VARCHAR)
+              replay.filePath      // file_path (TEXT)
+            ]);
+
+            // Notifier
+            await NotificationService.notifyStagiaireReplayAvailable(userId, replay.filePath);
+
+            console.log(`✅ Replay sauvegardé et notification envoyée`);
+          }
+        } catch (error) {
+          console.error('❌ Erreur sauvegarde replay:', error);
+        }
+      }
       removeUnityFromChannel(currentChannel);
       notifyChannelViewers(currentChannel, {
         type: 'unity-disconnected',
         channelId: currentChannel
       });
     } else if (currentChannel) {
-      console.log(`👋 Viewer disconnected from channel: ${currentChannel}`);
+      console.log(` Viewer disconnected from channel: ${currentChannel}`);
       unsubscribeViewer(ws, currentChannel);
     }
 
@@ -346,7 +467,7 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("error", (err) => {
-    console.log(`🔥 [${clientId}] Error:`, err.message);
+    console.log(` [${clientId}] Error:`, err.message);
   });
 });
 

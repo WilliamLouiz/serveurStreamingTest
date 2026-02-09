@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Session = require('../models/Session');
 const EmailService = require('../services/emailService');
 const { ROLES, ACCOUNT_STATUS } = require('../config/constants');
+const NotificationService = require('../services/notificationService');
 const crypto = require('crypto');
 
 exports.register = async (req, res) => {
@@ -26,6 +27,22 @@ exports.register = async (req, res) => {
       password,
       role
     });
+    console.log(' Nouvel utilisateur créé:', newUser);
+
+    // Construire l'objet utilisateur complet pour la notification
+    const userForNotification = {
+      id: newUser.id,
+      nom: nom,
+      prenom: prenom,
+      email: email,
+      role: role
+    };
+
+    if (role !== ROLES.ADMIN) {
+      // Pour les non-admins, envoyer une notification à l'admin
+      console.log('Envoi notification admin pour nouvel utilisateur');
+      await NotificationService.notifyAdminNewUser(userForNotification);
+    }
     
     // Si c'est un admin, le compte est automatiquement validé
     if (role === ROLES.ADMIN) {

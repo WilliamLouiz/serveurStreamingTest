@@ -1,33 +1,40 @@
 const express = require('express');
 const router = express.Router();
-
-// Importer les routes
+const { authenticate } = require('../middleware/auth');
+const pool = require('../config/database');
 const authRoutes = require('./authRoutes');
 const userRoutes = require('./userRoutes');
 const channelRoutes = require('./channelRoutes');
 const adminRoutes = require('./adminRoutes');
+const encadrementRoute = require("./encadrementRoutes");
+const noteRoute = require("./noteRoutes");
+const notificationRoute = require("./notificationRoutes")
 
+const path = require('path');
 // Utiliser les routes
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
 router.use('/channels', channelRoutes);
-router.use('/admin', adminRoutes); 
+router.use('/admin', adminRoutes);
+router.use("/encadrements", encadrementRoute);
+router.use("/notes", noteRoute);
+router.use("/notifications", notificationRoute);
 
 // route pour vérifier l'identifiant stagiaire
 router.post('/verify-stagiaire', async (req, res) => {
   try {
     const { channelId, stagiaireId } = req.body;
-    
+
     if (!channelId || !stagiaireId) {
       return res.status(400).json({
         success: false,
         error: 'channelId et stagiaireId sont requis'
       });
     }
-    
+
     // Trouver le stagiaire par son identifiant
     const user = await require('../models/User').findByStagiaireId(stagiaireId);
-    
+
     if (!user) {
       return res.json({
         success: false,
@@ -35,7 +42,7 @@ router.post('/verify-stagiaire', async (req, res) => {
         user: null
       });
     }
-    
+
     // Vérifier si le compte est validé
     if (!user.is_validated || user.status !== 'validated') {
       return res.json({
@@ -44,7 +51,7 @@ router.post('/verify-stagiaire', async (req, res) => {
         user: null
       });
     }
-    
+
     // Retourner les infos du stagiaire
     res.json({
       success: true,
@@ -57,7 +64,7 @@ router.post('/verify-stagiaire', async (req, res) => {
         channelId: channelId // Associer le channelId au stagiaire
       }
     });
-    
+
   } catch (error) {
     console.error('Erreur vérification stagiaire:', error);
     res.status(500).json({
@@ -71,17 +78,17 @@ router.post('/verify-stagiaire', async (req, res) => {
 router.get('/stagiaire/:stagiaireId', async (req, res) => {
   try {
     const { stagiaireId } = req.params;
-    
+
     if (!stagiaireId) {
       return res.status(400).json({
         success: false,
         error: 'Identifiant stagiaire requis'
       });
     }
-    
+
     // Trouver le stagiaire par son identifiant
     const user = await require('../models/User').findByStagiaireId(stagiaireId);
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -89,10 +96,10 @@ router.get('/stagiaire/:stagiaireId', async (req, res) => {
         user: null
       });
     }
-    
+
     // Ne pas renvoyer le mot de passe
     delete user.password;
-    
+
     res.json({
       success: true,
       user: {
@@ -106,7 +113,7 @@ router.get('/stagiaire/:stagiaireId', async (req, res) => {
         status: user.status
       }
     });
-    
+
   } catch (error) {
     console.error('Erreur récupération stagiaire:', error);
     res.status(500).json({
@@ -119,11 +126,11 @@ router.get('/stagiaire/:stagiaireId', async (req, res) => {
 // Middleware pour rafraîchir automatiquement les tokens
 router.use(async (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
-  
+
   if (token && res.get('X-New-Token')) {
     // Renvoyer le nouveau token dans la réponse
-    res.json = (function(originalJson) {
-      return function(data) {
+    res.json = (function (originalJson) {
+      return function (data) {
         if (data && typeof data === 'object') {
           data.newToken = res.get('X-New-Token');
           data.tokenRefreshed = true;
@@ -132,8 +139,55 @@ router.use(async (req, res, next) => {
       };
     })(res.json.bind(res));
   }
-  
+
   next();
+});
+
+router.get('/replay/me', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const { rows } = await pool.query(`
+      SELECT file_path, created_at
+      FROM streams_replay
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, [userId]);
+
+    if (rows.length === 0) {
+      return res.json({
+        success: false,
+        replay: null
+      });
+    }
+
+    const rawPath = rows[0].file_path;
+
+
+    const relativePath = rawPath
+      .replace(/\\/g, '/')
+      .replace(process.cwd(), '');
+
+    const videoUrl = relativePath.startsWith('/recordings')
+      ? relativePath
+      : '/recordings' + relativePath.split('/recordings')[1];
+
+    res.json({
+      success: true,
+      replay: {
+        videoUrl,
+        createdAt: rows[0].created_at
+      }
+    });
+
+  } catch (err) {
+    console.error('Erreur replay:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur récupération replay'
+    });
+  }
 });
 
 // Route de test

@@ -16,10 +16,13 @@ async function initializeDatabase() {
 
     // 1. Créer la base de données si elle n'existe pas
     console.log('Création de la base de données...');
+    const dbName = process.env.PG_DATABASE || 'Streaming';
+    
+    // Correction: utiliser une requête paramétrée
     await client.query(`
-      SELECT 'CREATE DATABASE ${process.env.PG_DATABASE}'
-      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${process.env.PG_DATABASE}')
-    `);
+      SELECT 'CREATE DATABASE "${dbName}"'
+      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = $1)
+    `, [dbName]);
 
     console.log(' Base de données prête');
 
@@ -36,7 +39,7 @@ const appPool = new Pool({
   host: process.env.PG_HOST,
   user: process.env.PG_USER,
   password: process.env.PG_PASSWORD,
-  database: process.env.PG_DATABASE,
+  database: process.env.PG_DATABASE || 'Streaming',
   port: process.env.PG_PORT || 5432,
 });
 
@@ -45,7 +48,7 @@ async function createTables() {
   try {
     console.log(' Création des tables...');
 
-    // Table users
+    // Table users - Mise à jour avec toutes les colonnes
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -68,6 +71,7 @@ async function createTables() {
       )
     `);
 
+    // Table email_templates - Correction du format
     await client.query(`
       CREATE TABLE IF NOT EXISTS email_templates (
         id SERIAL PRIMARY KEY,
@@ -141,7 +145,62 @@ async function createTables() {
       )
     `);
 
-    // Insérer les templates d'email par défaut
+    // Table encadrements
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS encadrements (
+        id SERIAL PRIMARY KEY,
+        formateur_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        stagiaire_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        description TEXT,
+        updated_at TIMESTAMP,
+        UNIQUE(formateur_id, stagiaire_id)
+      )
+    `);
+
+    // Table notes
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notes (
+        id SERIAL PRIMARY KEY,
+        formateur_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        stagiaire_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        note NUMERIC(5,2) NOT NULL,
+        commentaire TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // CORRECTION: Table notifications - version corrigée
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,  -- Changé de VARCHAR(50) à INTEGER
+        titre VARCHAR(255) NOT NULL,
+        description TEXT,
+        type VARCHAR(50),
+        is_read BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        metadata JSONB DEFAULT '{}'::jsonb,
+        read_at TIMESTAMP,
+        user_identifier VARCHAR(50)  -- Pour stocker l'identifiant texte (ex: VR7574)
+      )
+    `);
+
+    // Table streams_replay
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS streams_replay (
+        id SERIAL PRIMARY KEY,
+        stagiaire_id VARCHAR(50) NOT NULL,
+        channel_id VARCHAR(100) NOT NULL,
+        file_path TEXT NOT NULL,
+        duration INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP NOT NULL,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+      )
+    `);
+
+    // Insérer les templates d'email par défaut 
     await client.query(`
       INSERT INTO email_templates (template_name, subject, html_content) 
       VALUES 
@@ -165,79 +224,225 @@ async function createTables() {
       (
         'account_created',
         'Nouveau compte en attente de validation',
-        '<h1>Nouvelle inscription</h1>
-        <p>Un nouvel utilisateur s''est inscrit et attend votre validation :</p>
-        <ul>
-          <li><strong>Nom :</strong> {{nom}}</li>
-          <li><strong>Prénom :</strong> {{prenom}}</li>
-          <li><strong>Email :</strong> {{email}}</li>
-          <li><strong>Rôle :</strong> {{role}}</li>
-          <li><strong>Date d''inscription :</strong> {{created_at}}</li>
-        </ul>
-        <p>Pour valider ou rejeter ce compte, connectez-vous à l''administration.</p>
-        <p><a href="{{admin_url}}">Accéder à l''administration</a></p>'
+        '<!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Nouvel utilisateur en attente</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background-color: #2196F3; color: white; padding: 20px; text-align: center; }
+                .content { padding: 20px; background-color: #f9f9f9; }
+                .footer { padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                .button { display: inline-block; padding: 12px 24px; background-color: #2196F3; color: white; text-decoration: none; border-radius: 4px; }
+                .info-box { background-color: #e7f3fe; border-left: 4px solid #2196F3; padding: 15px; margin: 20px 0; }
+                ul { padding-left: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>Nouvelle inscription</h1>
+                </div>
+                <div class="content">
+                    <h2>Administrateur,</h2>
+                    <p>Un nouvel utilisateur s''est inscrit et attend votre validation :</p>
+                    
+                    <div class="info-box">
+                        <ul>
+                            <li><strong>Nom :</strong> {{nom}}</li>
+                            <li><strong>Prénom :</strong> {{prenom}}</li>
+                            <li><strong>Email :</strong> {{email}}</li>
+                            <li><strong>Rôle :</strong> {{role}}</li>
+                            <li><strong>Date d''inscription :</strong> {{created_at}}</li>
+                        </ul>
+                    </div>
+                    
+                    <p>Pour valider ou rejeter ce compte, connectez-vous à l''administration :</p>
+                    
+                    <p style="text-align: center; margin: 30px 0;">
+                        <a href="{{admin_url}}" class="button">Accéder à l''administration</a>
+                    </p>
+                </div>
+                <div class="footer">
+                    <p>Cordialement,<br>L''équipe de la plateforme</p>
+                </div>
+            </div>
+        </body>
+        </html>'
       ),
       (
         'account_rejected',
         'Votre compte a été rejeté',
-        '<h1>Notification concernant votre compte</h1>
-        <p>Bonjour {{nom}} {{prenom}},</p>
-        <p>Votre demande de création de compte sur notre plateforme de streaming a été rejetée.</p>
-        <p>Raison : {{rejection_reason}}</p>
-        <p>Si vous pensez qu''il s''agit d''une erreur, veuillez contacter l''administrateur.</p>
-        <br>
-        <p>Cordialement,<br>L''équipe de la plateforme</p>'
+        '<!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Compte rejeté</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background-color: #f44336; color: white; padding: 20px; text-align: center; }
+                .content { padding: 20px; background-color: #f9f9f9; }
+                .footer { padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                .alert { background-color: #f8d7da; border-left: 4px solid #f44336; padding: 15px; margin: 20px 0; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>Notification importante</h1>
+                </div>
+                <div class="content">
+                    <h2>Bonjour {{nom}} {{prenom}},</h2>
+                    <p>Votre demande de création de compte sur notre plateforme de streaming VR a été examinée.</p>
+                    
+                    <div class="alert">
+                        <h3>Décision : Compte rejeté</h3>
+                        <p><strong>Raison :</strong> {{rejection_reason}}</p>
+                    </div>
+                    
+                    <p>Si vous pensez qu''il s''agit d''une erreur, vous pouvez contacter l''administrateur à l''adresse suivante :</p>
+                    <p><a href="mailto:{{admin_email}}">{{admin_email}}</a></p>
+                </div>
+                <div class="footer">
+                    <p>Cordialement,<br>L''équipe de la plateforme</p>
+                </div>
+            </div>
+        </body>
+        </html>'
       ),
       (
         'password_reset',
         'Réinitialisation de votre mot de passe',
-        '<h1>Réinitialisation de mot de passe</h1>
-        <p>Bonjour {{nom}} {{prenom}},</p>
-        <p>Vous avez demandé la réinitialisation de votre mot de passe.</p>
-        <p>Cliquez sur le lien suivant pour définir un nouveau mot de passe :</p>
-        <p><a href="{{reset_url}}">Réinitialiser mon mot de passe</a></p>
-        <p>Ce lien expirera dans 1 heure.</p>
-        <p>Si vous n''avez pas demandé cette réinitialisation, veuillez ignorer cet email.</p>
-        <br>
-        <p>Cordialement,<br>L''équipe de la plateforme</p>'
+        '<!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Réinitialisation de mot de passe</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background-color: #FF9800; color: white; padding: 20px; text-align: center; }
+                .content { padding: 20px; background-color: #f9f9f9; }
+                .footer { padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                .button { display: inline-block; padding: 12px 24px; background-color: #FF9800; color: white; text-decoration: none; border-radius: 4px; }
+                .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>Réinitialisation de mot de passe</h1>
+                </div>
+                <div class="content">
+                    <h2>Bonjour {{nom}} {{prenom}},</h2>
+                    <p>Vous avez demandé la réinitialisation de votre mot de passe.</p>
+                    
+                    <p style="text-align: center; margin: 30px 0;">
+                        <a href="{{reset_url}}" class="button">Réinitialiser mon mot de passe</a>
+                    </p>
+                    
+                    <div class="warning">
+                        <p><strong>Ce lien expirera dans 1 heure.</strong></p>
+                        <p>Si vous n''avez pas demandé cette réinitialisation, veuillez ignorer cet email.</p>
+                    </div>
+                </div>
+                <div class="footer">
+                    <p>Cordialement,<br>L''équipe de la plateforme</p>
+                </div>
+            </div>
+        </body>
+        </html>'
       ),
       (
         'password_changed',
         'Votre mot de passe a été modifié',
-        '<h1>Mot de passe modifié</h1>
-        <p>Bonjour {{nom}} {{prenom}},</p>
-        <p>Votre mot de passe a été modifié avec succès.</p>
-        <p>Si vous n''avez pas effectué cette modification, veuillez contacter immédiatement l''administrateur.</p>
-        <br>
-        <p>Cordialement,<br>L''équipe de la plateforme</p>'
+        '<!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Mot de passe modifié</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background-color: #4CAF50; color: white; padding: 20px; text-align: center; }
+                .content { padding: 20px; background-color: #f9f9f9; }
+                .footer { padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                .info { background-color: #e7f3fe; border-left: 4px solid #2196F3; padding: 15px; margin: 20px 0; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>Mot de passe modifié</h1>
+                </div>
+                <div class="content">
+                    <h2>Bonjour {{nom}} {{prenom}},</h2>
+                    <p>Votre mot de passe a été modifié avec succès.</p>
+                    
+                    <div class="info">
+                        <p><strong>Informations de sécurité :</strong></p>
+                        <p>Si vous n''avez pas effectué cette modification, veuillez contacter immédiatement l''administrateur.</p>
+                    </div>
+                    
+                    <p>Vous pouvez maintenant utiliser vos nouvelles informations pour vous connecter à la plateforme.</p>
+                </div>
+                <div class="footer">
+                    <p>Cordialement,<br>L''équipe de la plateforme</p>
+                </div>
+            </div>
+        </body>
+        </html>'
       )
       ON CONFLICT (template_name) DO NOTHING
     `);
 
-    // Créer un index pour améliorer les performances
+    // Créer tous les index nécessaires
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+      CREATE INDEX IF NOT EXISTS idx_users_stagiaire_id ON users(stagiaire_id);
       CREATE INDEX IF NOT EXISTS idx_channels_created_by ON channels(created_by);
       CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON channel_subscriptions(user_id);
       CREATE INDEX IF NOT EXISTS idx_subscriptions_channel ON channel_subscriptions(channel_id);
       CREATE INDEX IF NOT EXISTS idx_sessions_channel ON streaming_sessions(channel_id);
       CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token);
       CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_encadrements_formateur ON encadrements(formateur_id);
+      CREATE INDEX IF NOT EXISTS idx_encadrements_stagiaire ON encadrements(stagiaire_id);
+      CREATE INDEX IF NOT EXISTS idx_notes_formateur ON notes(formateur_id);
+      CREATE INDEX IF NOT EXISTS idx_notes_stagiaire ON notes(stagiaire_id);
+      CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+      CREATE INDEX IF NOT EXISTS idx_notifications_user_identifier ON notifications(user_identifier);
+      CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(is_read);
+      CREATE INDEX IF NOT EXISTS idx_streams_replay_stagiaire ON streams_replay(stagiaire_id);
+      CREATE INDEX IF NOT EXISTS idx_streams_replay_channel ON streams_replay(channel_id);
     `);
 
     // Créer un utilisateur admin par défaut
     const adminPassword = await require('bcryptjs').hash('admin123', 10);
     await client.query(`
-      INSERT INTO users (nom, prenom, email, password, role)
-      VALUES ('William', 'NJ', 'njatomiarintsoawilliam@gmail.com', $1, 'admin')
+      INSERT INTO users (nom, prenom, email, password, role, status, is_validated)
+      VALUES ('Admin', 'System', 'admin@streaming.com', $1, 'admin', 'validated', true)
+      ON CONFLICT (email) DO NOTHING
+    `, [adminPassword]);
+
+    // Créer aussi l'admin spécifié
+    await client.query(`
+      INSERT INTO users (nom, prenom, email, password, role, status, is_validated)
+      VALUES ('William', 'NJ', 'njatomiarintsoawilliam@gmail.com', $1, 'admin', 'validated', true)
       ON CONFLICT (email) DO NOTHING
     `, [adminPassword]);
 
     console.log(' Tables créées avec succès!');
-    console.log(' Compte admin créé: njatomiarintsoawilliam@gmail.com / admin123');
+    console.log(' Comptes admin créés:');
+    console.log('   - admin@streaming.com / admin123');
+    console.log('   - njatomiarintsoawilliam@gmail.com / admin123');
 
   } catch (error) {
     console.error(' Erreur lors de la création des tables:', error);
+    console.error(' Détail:', error.message);
   } finally {
     client.release();
     await appPool.end();
@@ -246,10 +451,14 @@ async function createTables() {
 
 // Exécuter l'initialisation
 async function main() {
+  console.log('===== DÉBUT INITIALISATION BASE DE DONNÉES =====');
   await initializeDatabase();
   await createTables();
-  console.log(' Initialisation terminée!');
+  console.log('===== INITIALISATION TERMINÉE AVEC SUCCÈS =====');
   process.exit(0);
 }
 
-main().catch(console.error);
+main().catch(error => {
+  console.error(' Erreur fatale:', error);
+  process.exit(1);
+});

@@ -63,6 +63,12 @@ exports.validateUser = async (req, res) => {
       // Envoyer l'email de validation
       await EmailService.sendAccountValidatedEmail(user, validationToken, stagiaireId);
     }
+
+    // Notifier le stagiaire que son compte est validé
+    if (user.role === 'stagiaire') {
+      const NotificationService = require('../services/notificationService');
+      await NotificationService.notifyStagiaireValidated(user);
+    }
     
     res.json({
       success: true,
