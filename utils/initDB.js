@@ -160,13 +160,18 @@ async function createTables() {
 
     // Table notes
     await client.query(`
-      CREATE TABLE IF NOT EXISTS notes (
-        id SERIAL PRIMARY KEY,
-        formateur_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        stagiaire_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        note NUMERIC(5,2) NOT NULL,
-        commentaire TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      CREATE TABLE notes (
+          id SERIAL PRIMARY KEY,
+          formateur_id INTEGER NOT NULL REFERENCES users(id),
+          stagiaire_id INTEGER NOT NULL REFERENCES users(id),
+          note INTEGER NOT NULL, -- Note sur 20 (stockée comme 4-20)
+          commentaire TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          
+          CONSTRAINT fk_formateur FOREIGN KEY (formateur_id) REFERENCES users(id),
+          CONSTRAINT fk_stagiaire FOREIGN KEY (stagiaire_id) REFERENCES users(id),
+          CONSTRAINT check_note_range CHECK (note >= 1 AND note <= 20)
       )
     `);
 
@@ -399,6 +404,36 @@ async function createTables() {
       ON CONFLICT (template_name) DO NOTHING
     `);
 
+    // Table active_channels pour stocker les canaux actifs en temps réel
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS active_channels (
+        id SERIAL PRIMARY KEY,
+        channel_id VARCHAR(100) NOT NULL UNIQUE,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        stagiaire_id VARCHAR(50),
+        connected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_ping TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        status VARCHAR(20) DEFAULT 'connected' CHECK (status IN ('connected', 'disconnected')),
+        metadata JSONB DEFAULT '{}'::jsonb,
+        CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users(id)
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS comments (
+        id SERIAL PRIMARY KEY,
+        formateur_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        stagiaire_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        commentaire TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        is_edited BOOLEAN DEFAULT false,
+        
+        CONSTRAINT fk_formateur_comment FOREIGN KEY (formateur_id) REFERENCES users(id),
+        CONSTRAINT fk_stagiaire_comment FOREIGN KEY (stagiaire_id) REFERENCES users(id)
+      )
+    `);
+
     // Créer tous les index nécessaires
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -413,11 +448,15 @@ async function createTables() {
       CREATE INDEX IF NOT EXISTS idx_encadrements_stagiaire ON encadrements(stagiaire_id);
       CREATE INDEX IF NOT EXISTS idx_notes_formateur ON notes(formateur_id);
       CREATE INDEX IF NOT EXISTS idx_notes_stagiaire ON notes(stagiaire_id);
+      CREATE INDEX IF NOT EXISTS idx_notes_combined ON notes(formateur_id, stagiaire_id);
       CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
       CREATE INDEX IF NOT EXISTS idx_notifications_user_identifier ON notifications(user_identifier);
       CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(is_read);
       CREATE INDEX IF NOT EXISTS idx_streams_replay_stagiaire ON streams_replay(stagiaire_id);
       CREATE INDEX IF NOT EXISTS idx_streams_replay_channel ON streams_replay(channel_id);
+      CREATE INDEX IF NOT EXISTS idx_comments_formateur ON comments(formateur_id);
+      CREATE INDEX IF NOT EXISTS idx_comments_stagiaire ON comments(stagiaire_id);
+      CREATE INDEX IF NOT EXISTS idx_comments_created_at ON comments(created_at DESC);
     `);
 
     // Créer un utilisateur admin par défaut

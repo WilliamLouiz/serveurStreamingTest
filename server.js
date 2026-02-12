@@ -7,6 +7,7 @@ const pool = require('./config/database');
 const apiRoutes = require('./routes/apiRoutes');
 const NotificationService = require('./services/notificationService');
 require('./jobs/cleanupReplays');
+require('./jobs/cleanupChannel');
 const {
   startRecording,
   saveFrame,
@@ -175,6 +176,7 @@ wss.on("connection", (ws, req) => {
 
             let userInfo = null;
             let isAuthenticated = false;
+            let dbUser = null;
 
             // Si la base de données n'est pas disponible, fallback
             if (!pool) {
@@ -198,29 +200,28 @@ wss.on("connection", (ws, req) => {
                 );
 
                 if (result.rows.length > 0) {
-                  const user = result.rows[0];
+                  dbUser = result.rows[0];
                   userInfo = {
-                    id: user.id,
-                    nom: user.nom,
-                    prenom: user.prenom,
-                    email: user.email,
-                    stagiaire_id: user.stagiaire_id
+                    id: dbUser.id,
+                    nom: dbUser.nom,
+                    prenom: dbUser.prenom,
+                    email: dbUser.email,
+                    stagiaire_id: dbUser.stagiaire_id
                   };
                   isAuthenticated = true;
-                  console.log(` Stagiaire trouvé: ${user.prenom} ${user.nom}`);
+                  console.log(` Stagiaire trouvé: ${dbUser.prenom} ${dbUser.nom}`);
                 } else {
                   console.log(` Aucun stagiaire validé avec stagiaire_id: ${userId}`);
                 }
               } catch (dbError) {
                 console.error(` Erreur base de données:`, dbError.message);
-                // Fallback en cas d'erreur DB
                 userInfo = {
                   nom: 'Utilisateur',
                   prenom: 'Fallback',
                   stagiaire_id: userId,
                   status: 'unknown'
                 };
-                isAuthenticated = true; // Accepter quand même pour éviter de bloquer
+                isAuthenticated = true;
               }
             }
 
@@ -231,12 +232,24 @@ wss.on("connection", (ws, req) => {
               metadata: metadata || {},
               userId: userId,
               user: userInfo,
+              dbUser: dbUser,
               authenticated: isAuthenticated,
               active: isAuthenticated,
               lastPing: Date.now()
             };
 
             channels.set(channelId, channel);
+
+            // Sauvegarder le canal actif dans la base de données
+            if (isAuthenticated && dbUser) {
+              await saveActiveChannel(channelId, dbUser.id, userId, {
+                channelName: `Channel ${channelId}`,
+                userAgent: metadata.userAgent,
+                ip: req.socket.remoteAddress,
+                resolution: metadata.resolution,
+                fps: metadata.fps
+              });
+            }
 
             //  Répondre à Unity
             if (isAuthenticated) {
@@ -255,8 +268,8 @@ wss.on("connection", (ws, req) => {
                     // 2. Maintenant trouver le formateur de ce stagiaire
                     const formateurResult = await pool.query(
                       `SELECT formateur_id 
-         FROM encadrements 
-         WHERE stagiaire_id = $1`,
+                        FROM encadrements 
+                        WHERE stagiaire_id = $1`,
                       [stagiaireUserId]
                     );
                     if (formateurResult.rows.length > 0) {
@@ -419,8 +432,10 @@ wss.on("connection", (ws, req) => {
 
     if (isUnity && currentChannel) {
       console.log(` Unity disconnected from channel: ${currentChannel}`);
-      const replay = await stopRecording(currentChannel);
+      await removeActiveChannel(currentChannel);
 
+      const replay = await stopRecording(currentChannel);
+      
       if (replay) {
         try {
           // Trouver l'ID utilisateur
@@ -677,6 +692,59 @@ function notifyChannelViewers(channelId, message) {
     }
   });
 }
+
+async function saveActiveChannel(channelId, userId, stagiaireId, metadata = {}) {
+  try {
+    await pool.query(`
+      INSERT INTO active_channels (channel_id, user_id, stagiaire_id, metadata, status, last_ping)
+      VALUES ($1, $2, $3, $4, 'connected', CURRENT_TIMESTAMP)
+      ON CONFLICT (channel_id) 
+      DO UPDATE SET 
+        user_id = EXCLUDED.user_id,
+        stagiaire_id = EXCLUDED.stagiaire_id,
+        metadata = EXCLUDED.metadata,
+        status = 'connected',
+        last_ping = CURRENT_TIMESTAMP,
+        connected_at = CASE 
+          WHEN active_channels.status = 'disconnected' THEN CURRENT_TIMESTAMP 
+          ELSE active_channels.connected_at 
+        END
+    `, [channelId, userId, stagiaireId, JSON.stringify(metadata)]);
+
+    console.log(` Canal ${channelId} sauvegardé en base`);
+  } catch (error) {
+    console.error(' Erreur sauvegarde canal:', error);
+  }
+}
+
+async function updateChannelStatus(channelId, status) {
+  try {
+    await pool.query(`
+      UPDATE active_channels 
+      SET status = $2, last_ping = CURRENT_TIMESTAMP
+      WHERE channel_id = $1
+    `, [channelId, status]);
+
+    console.log(`Statut canal ${channelId} mis à jour: ${status}`);
+  } catch (error) {
+    console.error(' Erreur mise à jour statut:', error);
+  }
+}
+
+async function removeActiveChannel(channelId) {
+  try {
+    await pool.query(`
+      UPDATE active_channels 
+      SET status = 'disconnected', last_ping = CURRENT_TIMESTAMP
+      WHERE channel_id = $1
+    `, [channelId]);
+
+    console.log(` Canal ${channelId} marqué comme déconnecté`);
+  } catch (error) {
+    console.error(' Erreur suppression canal:', error);
+  }
+}
+
 
 // ===== ROUTES HTTP =====
 

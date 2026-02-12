@@ -9,6 +9,7 @@ const adminRoutes = require('./adminRoutes');
 const encadrementRoute = require("./encadrementRoutes");
 const noteRoute = require("./noteRoutes");
 const notificationRoute = require("./notificationRoutes")
+const commentRoutes = require("./commentRoutes");
 
 const path = require('path');
 // Utiliser les routes
@@ -19,6 +20,8 @@ router.use('/admin', adminRoutes);
 router.use("/encadrements", encadrementRoute);
 router.use("/notes", noteRoute);
 router.use("/notifications", notificationRoute);
+router.use("/comments", commentRoutes);
+
 
 // route pour vérifier l'identifiant stagiaire
 router.post('/verify-stagiaire', async (req, res) => {
@@ -186,6 +189,170 @@ router.get('/replay/me', authenticate, async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Erreur récupération replay'
+    });
+  }
+});
+
+// Route pour récupérer tous les replays (formateurs et admin)
+router.get('/replays/all', authenticate, async (req, res) => {
+  try {
+    const user = req.user;
+    
+    let query = `
+      SELECT 
+        sr.*,
+        u.nom as stagiaire_nom,
+        u.prenom as stagiaire_prenom,
+        u.stagiaire_id,
+        f.nom as formateur_nom,
+        f.prenom as formateur_prenom
+      FROM streams_replay sr
+      LEFT JOIN users u ON sr.stagiaire_id = u.stagiaire_id
+      LEFT JOIN encadrements e ON u.id = e.stagiaire_id
+      LEFT JOIN users f ON e.formateur_id = f.id
+      WHERE sr.expires_at > NOW()
+    `;
+    
+    // Si c'est un formateur, seulement ses stagiaires
+    if (user.role === 'formateur') {
+      query += ` AND e.formateur_id = $1`;
+    }
+    // Admin voit tout
+    
+    query += ` ORDER BY sr.created_at DESC`;
+    
+    const params = user.role === 'formateur' ? [user.id] : [];
+    
+    const result = await pool.query(query, params);
+    
+    // Formatter les URLs vidéo
+    const replays = result.rows.map(replay => {
+      const rawPath = replay.file_path;
+      const relativePath = rawPath
+        .replace(/\\/g, '/')
+        .replace(process.cwd(), '');
+      
+      const videoUrl = relativePath.startsWith('/recordings')
+        ? relativePath
+        : '/recordings' + relativePath.split('/recordings')[1];
+      
+      return {
+        id: replay.id,
+        video_url: videoUrl,
+        stagiaire_id: replay.stagiaire_id,
+        stagiaire_name: replay.stagiaire_nom && replay.stagiaire_prenom 
+          ? `${replay.stagiaire_prenom} ${replay.stagiaire_nom}`
+          : `Stagiaire ${replay.stagiaire_id}`,
+        formateur_name: replay.formateur_nom && replay.formateur_prenom
+          ? `${replay.formateur_prenom} ${replay.formateur_nom}`
+          : "Non assigné",
+        channel_id: replay.channel_id,
+        duration: replay.duration,
+        created_at: replay.created_at,
+        expires_at: replay.expires_at
+      };
+    });
+    
+    res.json({
+      success: true,
+      replays: replays
+    });
+    
+  } catch (error) {
+    console.error('Erreur récupération replays:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des vidéos'
+    });
+  }
+});
+
+// Route pour récupérer les replays avec les notes existantes
+router.get('/replays/all-with-notes', authenticate, async (req, res) => {
+  try {
+    const user = req.user;
+    
+    let query = `
+      SELECT 
+        sr.*,
+        u.id as stagiaire_user_id,
+        u.nom as stagiaire_nom,
+        u.prenom as stagiaire_prenom,
+        u.stagiaire_id,
+        f.nom as formateur_nom,
+        f.prenom as formateur_prenom,
+        n.note as existing_note,
+        n.commentaire as note_commentaire,
+        n.created_at as note_date
+      FROM streams_replay sr
+      LEFT JOIN users u ON sr.stagiaire_id = u.stagiaire_id
+      LEFT JOIN encadrements e ON u.id = e.stagiaire_id AND e.formateur_id = $1
+      LEFT JOIN users f ON e.formateur_id = f.id
+      LEFT JOIN notes n ON u.id = n.stagiaire_id AND n.formateur_id = $1
+      WHERE sr.expires_at > NOW()
+    `;
+    
+    // Si c'est un formateur, seulement ses stagiaires
+    if (user.role === 'formateur') {
+      query += ` AND e.formateur_id = $1`;
+    } else if (user.role === 'admin') {
+      // Admin voit tout - pas de filtre
+    } else {
+      return res.status(403).json({
+        success: false,
+        error: 'Accès non autorisé'
+      });
+    }
+    
+    query += ` ORDER BY sr.created_at DESC`;
+    
+    const params = user.role === 'formateur' ? [user.id] : [];
+    
+    const result = await pool.query(query, params);
+    
+    // Formatter les URLs vidéo
+    const replays = result.rows.map(replay => {
+      const rawPath = replay.file_path;
+      const relativePath = rawPath
+        .replace(/\\/g, '/')
+        .replace(process.cwd(), '');
+      
+      const videoUrl = relativePath.startsWith('/recordings')
+        ? relativePath
+        : '/recordings' + relativePath.split('/recordings')[1];
+      
+      return {
+        id: replay.id,
+        video_url: videoUrl,
+        stagiaire_id: replay.stagiaire_id,
+        stagiaire_user_id: replay.stagiaire_user_id,
+        stagiaire_name: replay.stagiaire_nom && replay.stagiaire_prenom 
+          ? `${replay.stagiaire_prenom} ${replay.stagiaire_nom}`
+          : `Stagiaire ${replay.stagiaire_id}`,
+        formateur_name: replay.formateur_nom && replay.formateur_prenom
+          ? `${replay.formateur_prenom} ${replay.formateur_nom}`
+          : "Non assigné",
+        channel_id: replay.channel_id,
+        duration: replay.duration,
+        created_at: replay.created_at,
+        expires_at: replay.expires_at,
+        has_note: !!replay.existing_note,
+        existing_note: replay.existing_note,
+        note_commentaire: replay.note_commentaire,
+        note_date: replay.note_date
+      };
+    });
+    
+    res.json({
+      success: true,
+      replays: replays
+    });
+    
+  } catch (error) {
+    console.error('Erreur récupération replays:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des vidéos'
     });
   }
 });
