@@ -61,7 +61,13 @@ exports.validateUser = async (req, res) => {
       );
       
       // Envoyer l'email de validation
-      await EmailService.sendAccountValidatedEmail(user, validationToken, stagiaireId);
+      if (fullUser.role === 'stagiaire' && stagiaireId) {
+        // Template stagiaire avec identifiant VR
+        await EmailService.sendStagiaireValidatedEmail(user, validationToken, stagiaireId);
+      } else {
+        // Template formateur/admin sans identifiant
+        await EmailService.sendFormateurValidatedEmail(user, validationToken);
+      }
     }
 
     // Notifier le stagiaire que son compte est validé

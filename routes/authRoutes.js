@@ -20,4 +20,13 @@ router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password', authController.resetPassword);
 router.get('/verify-reset-token/:token', authController.verifyResetToken);
 
+//route des 2fa
+router.post('/2fa/verify', authController.verifyTwoFactorCode);
+router.post('/2fa/resend', authController.resendTwoFactorCode);
+
+//route 2fa protégé (nécéssitant une authentification zandry vo miditra)
+router.get('/2fa/status', authenticate, authController.getTwoFactorStatus);
+router.post('/2fa/toggle', authenticate, authController.toggleTwoFactor);
+router.post('/2fa/backup-codes', authenticate, authController.generateBackupCodes);
+
 module.exports = router;

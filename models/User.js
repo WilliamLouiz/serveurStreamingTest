@@ -330,6 +330,21 @@ class User {
     return result.rows[0];
   }
 
+  // Méthode pour mettre à jour uniquement le mot de passe
+  static async updatePassword(id, newPassword) {
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    const result = await pool.query(
+      `UPDATE users 
+     SET password = $1, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $2 
+     RETURNING id`,
+      [hashedPassword, id]
+    );
+
+    return result.rows.length > 0;
+  }
+
 }
 
 module.exports = User;

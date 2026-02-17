@@ -288,9 +288,8 @@ router.get(
   }
 );
 
-/**
- * Récupérer tous les encadrements (admin seulement)
- */
+//Récupérer tous les encadrements (admin seulement)
+
 router.get(
   "/",
   authenticate,
@@ -415,6 +414,44 @@ router.get(
       });
     } catch (error) {
       console.error('Erreur recherche stagiaire:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  }
+);
+
+// pour vérifier si un formateur enncadre un stagiaire
+
+router.post(
+  "/verification",
+  authenticate,
+  async (req, res) => {
+    try {
+      const { formateur_id, stagiaire_id } = req.body;
+
+      // Vérifier que le formateur connecté est bien celui qui fait la requête
+      if (req.user.id !== parseInt(formateur_id) && req.user.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          error: "Non autorisé"
+        });
+      }
+
+      const result = await pool.query(
+        `SELECT id FROM encadrements 
+         WHERE formateur_id = $1 AND stagiaire_id = $2`,
+        [formateur_id, stagiaire_id]
+      );
+
+      res.json({
+        success: true,
+        is_encadrant: result.rowCount > 0
+      });
+
+    } catch (error) {
+      console.error('Erreur vérification encadrement:', error);
       res.status(500).json({
         success: false,
         error: error.message

@@ -15,7 +15,7 @@ router.post(
         try {
             const { stagiaire_id, note, commentaire } = req.body;
             const formateur_id = req.user.id;
-
+            
             // Détecter si la note est sur 5 ou sur 20
             let noteSur20;
             let noteValue;
@@ -51,15 +51,15 @@ router.post(
 
             // Vérifier encadrement
             const check = await pool.query(
-                `SELECT 1 FROM encadrements
-                 WHERE formateur_id = $1 AND stagiaire_id = $2`,
+                `SELECT id FROM encadrements
+                WHERE formateur_id = $1 AND stagiaire_id = $2`,
                 [formateur_id, stagiaire_id]
             );
 
             if (check.rowCount === 0) {
                 return res.status(403).json({
-                    success: false,
-                    error: "Vous ne pouvez noter que vos stagiaires encadrés"
+                success: false,
+                error: "Vous ne pouvez noter que vos propres stagiaires encadrés"
                 });
             }
 

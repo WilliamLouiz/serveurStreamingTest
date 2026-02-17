@@ -65,6 +65,7 @@ async function createTables() {
         validated_by INTEGER REFERENCES users(id),
         reset_password_token VARCHAR(255),
         reset_password_expires TIMESTAMP,
+        certificat_valide BOOLEAN DEFAULT false,
         status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'validated', 'rejected', 'suspended')),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -160,17 +161,17 @@ async function createTables() {
 
     // Table notes
     await client.query(`
-      CREATE TABLE notes (
+      CREATE TABLE IF NOT EXISTS notes (
           id SERIAL PRIMARY KEY,
-          formateur_id INTEGER NOT NULL REFERENCES users(id),
-          stagiaire_id INTEGER NOT NULL REFERENCES users(id),
+          formateur_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          stagiaire_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           note INTEGER NOT NULL, -- Note sur 20 (stockée comme 4-20)
           commentaire TEXT,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           
-          CONSTRAINT fk_formateur FOREIGN KEY (formateur_id) REFERENCES users(id),
-          CONSTRAINT fk_stagiaire FOREIGN KEY (stagiaire_id) REFERENCES users(id),
+          CONSTRAINT fk_formateur FOREIGN KEY (formateur_id) REFERENCES users(id) ON DELETE CASCADE,
+          CONSTRAINT fk_stagiaire FOREIGN KEY (stagiaire_id) REFERENCES users(id) ON DELETE CASCADE,
           CONSTRAINT check_note_range CHECK (note >= 1 AND note <= 20)
       )
     `);
@@ -201,7 +202,9 @@ async function createTables() {
         duration INTEGER,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         expires_at TIMESTAMP NOT NULL,
-        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        note INTEGER CHECK (note >= 0 AND note <= 20),
+        certificat_valide BOOLEAN DEFAULT false
       )
     `);
 
@@ -425,12 +428,40 @@ async function createTables() {
         formateur_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         stagiaire_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         commentaire TEXT NOT NULL,
+        replay_id INTEGER REFERENCES streams_replay(id) ON DELETE CASCADE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         is_edited BOOLEAN DEFAULT false,
         
         CONSTRAINT fk_formateur_comment FOREIGN KEY (formateur_id) REFERENCES users(id),
         CONSTRAINT fk_stagiaire_comment FOREIGN KEY (stagiaire_id) REFERENCES users(id)
+      )
+    `);
+
+    // Table user_2fa - Authentification à deux facteurs
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_2fa (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        is_enabled BOOLEAN DEFAULT false,
+        secret_key VARCHAR(255), 
+        backup_codes TEXT[], 
+        last_used_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id)
+      )
+    `);
+
+    // Table user_2fa_codes - Codes temporaires pour 2FA par email
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_2fa_codes (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        code VARCHAR(6) NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        used_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -456,7 +487,12 @@ async function createTables() {
       CREATE INDEX IF NOT EXISTS idx_streams_replay_channel ON streams_replay(channel_id);
       CREATE INDEX IF NOT EXISTS idx_comments_formateur ON comments(formateur_id);
       CREATE INDEX IF NOT EXISTS idx_comments_stagiaire ON comments(stagiaire_id);
+      CREATE INDEX IF NOT EXISTS idx_comments_replay ON comments(replay_id);
       CREATE INDEX IF NOT EXISTS idx_comments_created_at ON comments(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_user_2fa_user_id ON user_2fa(user_id);
+      CREATE INDEX IF NOT EXISTS idx_user_2fa_codes_user_id ON user_2fa_codes(user_id);
+      CREATE INDEX IF NOT EXISTS idx_user_2fa_codes_code ON user_2fa_codes(code);
+      CREATE INDEX IF NOT EXISTS idx_user_2fa_codes_expires ON user_2fa_codes(expires_at);
     `);
 
     // Créer un utilisateur admin par défaut

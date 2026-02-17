@@ -188,22 +188,6 @@ router.post('/', authenticate, async (req, res) => {
       });
     }
 
-    // Vérifier que le formateur encadre bien ce stagiaire
-    if (req.user.role === 'formateur') {
-      const encadrementCheck = await pool.query(
-        `SELECT id FROM encadrements 
-         WHERE formateur_id = $1 AND stagiaire_id = $2`,
-        [formateur_id, stagiaire_id]
-      );
-
-      if (encadrementCheck.rows.length === 0) {
-        return res.status(403).json({
-          success: false,
-          error: 'Vous ne pouvez commenter que vos propres stagiaires'
-        });
-      }
-    }
-
     // Insérer le commentaire
     const { rows } = await pool.query(
       `INSERT INTO comments (formateur_id, stagiaire_id, commentaire) 
