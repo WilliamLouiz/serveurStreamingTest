@@ -170,6 +170,7 @@ async function createTables() {
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           
+          CONSTRAINT unique_formateur_stagiaire UNIQUE (formateur_id, stagiaire_id),
           CONSTRAINT fk_formateur FOREIGN KEY (formateur_id) REFERENCES users(id) ON DELETE CASCADE,
           CONSTRAINT fk_stagiaire FOREIGN KEY (stagiaire_id) REFERENCES users(id) ON DELETE CASCADE,
           CONSTRAINT check_note_range CHECK (note >= 1 AND note <= 20)

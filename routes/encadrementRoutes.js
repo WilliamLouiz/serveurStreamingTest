@@ -460,4 +460,39 @@ router.post(
   }
 );
 
+// pour récupérer les stagiaires d'un formateur
+router.get('/mes-stagiaires', authenticate, async (req, res) => {
+  try {
+    const formateurId = req.user.id;
+
+    const result = await pool.query(`
+      SELECT 
+        u.id,
+        u.nom,
+        u.prenom,
+        u.email,
+        u.stagiaire_id,
+        u.status,
+        n.note
+      FROM users u
+      JOIN encadrements e ON u.id = e.stagiaire_id
+      LEFT JOIN notes n ON u.id = n.stagiaire_id
+      WHERE e.formateur_id = $1 AND u.role = 'stagiaire'
+      ORDER BY u.nom, u.prenom
+    `, [formateurId]);
+
+    res.json({
+      success: true,
+      stagiaires: result.rows
+    });
+
+  } catch (error) {
+    console.error('Erreur récupération stagiaires du formateur:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;

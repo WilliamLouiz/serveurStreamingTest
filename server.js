@@ -331,6 +331,34 @@ wss.on("connection", (ws, req) => {
 
             console.log(` Channel '${channelId}' enregistré avec succès pour ${userInfo.prenom} ${userInfo.nom}`);
 
+            // Créer une entrée dans streams_replay DÈS LE DÉBUT
+            try {
+              // Vérifier si une entrée existe déjà pour ce channel
+              const existing = await pool.query(
+                `SELECT id FROM streams_replay WHERE channel_id = $1`,
+                [channelId]
+              );
+
+              if (existing.rows.length === 0) {
+                await pool.query(`
+                  INSERT INTO streams_replay
+                    (user_id, stagiaire_id, channel_id, file_path, expires_at, note, certificat_valide)
+                  VALUES ($1, $2, $3, $4, NOW() + INTERVAL '24 hours', $5, $6)
+                `, [
+                  dbUser.id,
+                  userId,
+                  channelId,
+                  '', // file_path vide pour l'instant
+                  null, // note pas encore
+                  false // certificat pas encore
+                ]);
+                console.log(` Entrée créée dans streams_replay pour ${channelId} (en attente du fichier)`);
+              } else {
+                console.log(` Entrée déjà existante pour ${channelId}`);
+              }
+            } catch (error) {
+              console.error('Erreur création entrée:', error);
+            }
             // Démarrer l'enregistrement
             startRecording(channelId, userId);
 
@@ -338,8 +366,8 @@ wss.on("connection", (ws, req) => {
             try {
               const formateurResult = await pool.query(
                 `SELECT formateur_id 
-         FROM encadrements 
-         WHERE stagiaire_id = $1`,
+                FROM encadrements 
+                WHERE stagiaire_id = $1`,
                 [dbUser.id]
               );
 
@@ -461,35 +489,49 @@ wss.on("connection", (ws, req) => {
           if (userResult.rows.length > 0) {
             const userId = userResult.rows[0].id;
 
-            // Récupérer la note et le certificat du stagiaire pour CE canal
-            const noteResult = await pool.query(`
-              SELECT certificat_valide 
-              FROM users 
-              WHERE id = $1
-          `, [userId]);
+            // Mettre à jour l'entrée existante avec le fichier
+            const updateResult = await pool.query(`
+        UPDATE streams_replay 
+        SET 
+          file_path = $2,
+          expires_at = NOW() + INTERVAL '24 hours'
+        WHERE channel_id = $1 AND file_path = ''
+        RETURNING id, note
+      `, [replay.channelId, replay.filePath]);
 
-            const userNote = null;
-            const userCertificat = noteResult.rows[0]?.certificat_valide || false;
+            if (updateResult.rows.length > 0) {
+              console.log(`✅ Replay mis à jour avec fichier, note existante: ${updateResult.rows[0].note}`);
+            } else {
+              // Si aucune entrée trouvée avec file_path vide, on vérifie si une entrée existe déjà avec un fichier
+              const checkExisting = await pool.query(
+                `SELECT id FROM streams_replay WHERE channel_id = $1`,
+                [replay.channelId]
+              );
 
-            await pool.query(`
-              INSERT INTO streams_replay
-                (user_id, stagiaire_id, channel_id, file_path, expires_at, note, certificat_valide)
-              VALUES ($1, $2, $3, $4, NOW() + INTERVAL '24 hours', $5, $6)
-            `, [
-              userId,
-              replay.stagiaireId,
-              replay.channelId,
-              replay.filePath,
-              userNote,        
-              userCertificat
-            ]);
+              if (checkExisting.rows.length === 0) {
+                // Créer une nouvelle entrée (cas improbable)
+                await pool.query(`
+            INSERT INTO streams_replay
+              (user_id, stagiaire_id, channel_id, file_path, expires_at, note, certificat_valide)
+            VALUES ($1, $2, $3, $4, NOW() + INTERVAL '24 hours', $5, $6)
+          `, [
+                  userId,
+                  replay.stagiaireId,
+                  replay.channelId,
+                  replay.filePath,
+                  null,
+                  false
+                ]);
+              }
+            }
+
             // Notifier
             await NotificationService.notifyStagiaireReplayAvailable(userId, replay.filePath);
 
-            console.log(` Replay sauvegardé avec note: ${userNote}, certificat: ${userCertificat}`);
+            console.log(`✅ Replay sauvegardé pour ${replay.channelId}`);
           }
         } catch (error) {
-          console.error(' Erreur sauvegarde replay:', error);
+          console.error('❌ Erreur sauvegarde replay:', error);
         }
       }
       removeUnityFromChannel(currentChannel);

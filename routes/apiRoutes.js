@@ -201,7 +201,7 @@ router.get('/replay/me', authenticate, async (req, res) => {
 router.get('/replays/all', authenticate, async (req, res) => {
   try {
     const user = req.user;
-    
+
     let query = `
       SELECT 
         sr.*,
@@ -216,35 +216,35 @@ router.get('/replays/all', authenticate, async (req, res) => {
       LEFT JOIN users f ON e.formateur_id = f.id
       WHERE sr.expires_at > NOW()
     `;
-    
+
     // Si c'est un formateur, seulement ses stagiaires
     if (user.role === 'formateur') {
       query += ` AND e.formateur_id = $1`;
     }
     // Admin voit tout
-    
+
     query += ` ORDER BY sr.created_at DESC`;
-    
+
     const params = user.role === 'formateur' ? [user.id] : [];
-    
+
     const result = await pool.query(query, params);
-    
+
     // Formatter les URLs vidéo
     const replays = result.rows.map(replay => {
       const rawPath = replay.file_path;
       const relativePath = rawPath
         .replace(/\\/g, '/')
         .replace(process.cwd(), '');
-      
+
       const videoUrl = relativePath.startsWith('/recordings')
         ? relativePath
         : '/recordings' + relativePath.split('/recordings')[1];
-      
+
       return {
         id: replay.id,
         video_url: videoUrl,
         stagiaire_id: replay.stagiaire_id,
-        stagiaire_name: replay.stagiaire_nom && replay.stagiaire_prenom 
+        stagiaire_name: replay.stagiaire_nom && replay.stagiaire_prenom
           ? `${replay.stagiaire_prenom} ${replay.stagiaire_nom}`
           : `Stagiaire ${replay.stagiaire_id}`,
         formateur_name: replay.formateur_nom && replay.formateur_prenom
@@ -256,12 +256,12 @@ router.get('/replays/all', authenticate, async (req, res) => {
         expires_at: replay.expires_at
       };
     });
-    
+
     res.json({
       success: true,
       replays: replays
     });
-    
+
   } catch (error) {
     console.error('Erreur récupération replays:', error);
     res.status(500).json({
@@ -275,7 +275,7 @@ router.get('/replays/all', authenticate, async (req, res) => {
 router.get('/replays/all-with-notes', authenticate, async (req, res) => {
   try {
     const user = req.user;
-    
+
     let query = `
       SELECT 
         sr.*,
@@ -291,36 +291,36 @@ router.get('/replays/all-with-notes', authenticate, async (req, res) => {
       LEFT JOIN users f ON e.formateur_id = f.id
       WHERE sr.expires_at > NOW()
     `;
-    
+
     let params = [];
-    
+
     // Si c'est un formateur, seulement ses stagiaires
     if (user.role === 'formateur') {
       query += ` AND e.formateur_id = $1`;
       params = [user.id];
     }
     // Admin voit tout - PAS DE PARAMÈTRES
-    
+
     query += ` ORDER BY sr.created_at DESC`;
     const result = await pool.query(query, params);
-    
+
     // Formatter les URLs vidéo
     const replays = result.rows.map(replay => {
       const rawPath = replay.file_path;
       const relativePath = rawPath
         .replace(/\\/g, '/')
         .replace(process.cwd(), '');
-      
+
       const videoUrl = relativePath.startsWith('/recordings')
         ? relativePath
         : '/recordings' + relativePath.split('/recordings')[1];
-      
+
       return {
         id: replay.id,
         video_url: videoUrl,
         stagiaire_id: replay.stagiaire_id,
         stagiaire_user_id: replay.stagiaire_user_id,
-        stagiaire_name: replay.stagiaire_nom && replay.stagiaire_prenom 
+        stagiaire_name: replay.stagiaire_nom && replay.stagiaire_prenom
           ? `${replay.stagiaire_prenom} ${replay.stagiaire_nom}`
           : `Stagiaire ${replay.stagiaire_id}`,
         formateur_name: replay.formateur_nom && replay.formateur_prenom
@@ -335,12 +335,12 @@ router.get('/replays/all-with-notes', authenticate, async (req, res) => {
         certificat_valide: replay.certificat_valide
       };
     });
-    
+
     res.json({
       success: true,
       replays: replays
     });
-    
+
   } catch (error) {
     console.error('Erreur récupération replays:', error);
     res.status(500).json({
@@ -382,7 +382,7 @@ router.patch('/replays/:id', authenticate, async (req, res) => {
           error: 'Impossible de vérifier les droits'
         });
       }
-      
+
       const encadrementCheck = await pool.query(`
         SELECT id FROM encadrements 
         WHERE formateur_id = $1 AND stagiaire_id = $2
@@ -487,7 +487,7 @@ router.delete('/replays/:id', authenticate, async (req, res) => {
     // Supprimer le fichier physique (optionnel)
     const fs = require('fs');
     const filePath = replay.file_path;
-    
+
     try {
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
@@ -539,7 +539,7 @@ router.get('/replays/me/all', authenticate, async (req, res) => {
       const relativePath = rawPath
         .replace(/\\/g, '/')
         .replace(process.cwd(), '');
-      
+
       const videoUrl = relativePath.startsWith('/recordings')
         ? relativePath
         : '/recordings' + relativePath.split('/recordings')[1];
@@ -573,6 +573,84 @@ router.get('/replays/me/all', authenticate, async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Erreur récupération des vidéos'
+    });
+  }
+});
+
+// Noter un stream en direct (crée ou met à jour l'entrée live dans streams_replay)
+router.post('/streams/:channelId/rate-live', authenticate, async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const { stagiaire_user_id, note_sur_20, note_sur_5 } = req.body;
+    const formateur_id = req.user.id;
+
+    // Vérifier que le formateur encadre bien ce stagiaire
+    const encadrementCheck = await pool.query(
+      `SELECT id FROM encadrements 
+       WHERE formateur_id = $1 AND stagiaire_id = $2`,
+      [formateur_id, stagiaire_user_id]
+    );
+
+    if (encadrementCheck.rows.length === 0) {
+      return res.status(403).json({
+        success: false,
+        error: 'Vous ne pouvez noter que vos stagiaires encadrés'
+      });
+    }
+
+    // Chercher l'entrée dans streams_replay (même sans fichier)
+    const existing = await pool.query(
+      `SELECT id FROM streams_replay 
+       WHERE channel_id = $1`,
+      [channelId]
+    );
+
+    let replayId;
+
+    if (existing.rows.length > 0) {
+      // Mettre à jour l'entrée existante
+      replayId = existing.rows[0].id;
+      await pool.query(
+        `UPDATE streams_replay 
+         SET note = $2, certificat_valide = $3
+         WHERE id = $1`,
+        [replayId, note_sur_20, note_sur_20 >= 10]
+      );
+    } else {
+      // Créer une nouvelle entrée (au cas où)
+      const result = await pool.query(
+        `INSERT INTO streams_replay
+          (user_id, stagiaire_id, channel_id, file_path, note, certificat_valide, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '24 hours')
+         RETURNING id`,
+        [stagiaire_user_id, stagiaire_user_id, channelId, '', note_sur_20, note_sur_20 >= 10]
+      );
+      replayId = result.rows[0].id;
+    }
+
+    // Sauvegarder aussi dans la table notes pour l'historique
+    await pool.query(
+      `INSERT INTO notes (formateur_id, stagiaire_id, note, commentaire)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (formateur_id, stagiaire_id) 
+       DO UPDATE SET note = EXCLUDED.note, updated_at = CURRENT_TIMESTAMP`,
+      [formateur_id, stagiaire_user_id, note_sur_20, `Note en direct: ${note_sur_5}/5`]
+    );
+
+    res.json({
+      success: true,
+      message: 'Note enregistrée avec succès',
+      replay_id: replayId,
+      note_sur_20,
+      note_sur_5,
+      certificat_valide: note_sur_20 >= 10
+    });
+
+  } catch (error) {
+    console.error('Erreur notation live:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
