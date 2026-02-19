@@ -44,7 +44,7 @@ router.post(
     try {
       const { formateur_id, stagiaire_id, description } = req.body;
 
-      // Vérifier que le stagiaire existe et a le bon rôle
+      // Vérifier que le stagiaire existe
       const stagiaireCheck = await pool.query(
         `SELECT id, role FROM users WHERE id = $1`,
         [stagiaire_id]
@@ -57,70 +57,51 @@ router.post(
         });
       }
 
-      if (stagiaireCheck.rows[0].role !== 'stagiaire') {
+      if (stagiaireCheck.rows[0].role !== "stagiaire") {
         return res.status(400).json({
           success: false,
           error: "L'utilisateur doit être un stagiaire"
         });
       }
 
-      // Vérifier si l'encadrement existe déjà
-      const check = await pool.query(
-        `SELECT id FROM encadrements 
-         WHERE formateur_id = $1 AND stagiaire_id = $2`,
-        [formateur_id, stagiaire_id]
+      // Supprimer ancien encadrement
+      await pool.query(
+        `DELETE FROM encadrements WHERE stagiaire_id = $1`,
+        [stagiaire_id]
       );
 
-      if (check.rowCount > 0) {
-        // Mettre à jour l'encadrement existant
-        await pool.query(
-          `UPDATE encadrements 
-           SET description = $3, updated_at = CURRENT_TIMESTAMP
-           WHERE formateur_id = $1 AND stagiaire_id = $2`,
-          [formateur_id, stagiaire_id, description]
-        );
+      // Créer nouveau
+      await pool.query(
+        `INSERT INTO encadrements(formateur_id, stagiaire_id, description)
+         VALUES($1, $2, $3)`,
+        [formateur_id, stagiaire_id, description]
+      );
 
-        // Notification au formateur
-        await createNotification({
-          user_id: formateur_id,
-          titre: "Modification d'encadrement",
-          description: `L'encadrement du stagiaire a été modifié`,
-          type: 'encadrement_update'
-        });
-      } else {
-        // Créer un nouvel encadrement
-        await pool.query(
-          `INSERT INTO encadrements(formateur_id, stagiaire_id, description)
-           VALUES($1, $2, $3)`,
-          [formateur_id, stagiaire_id, description]
-        );
+      // Notifications
+      await createNotification({
+        user_id: formateur_id,
+        titre: "Encadrement mis à jour",
+        description: `Un stagiaire vous a été assigné`,
+        type: "encadrement_update"
+      });
 
-        // Notifications
-        await createNotification({
-          user_id: formateur_id,
-          titre: "Nouveau stagiaire assigné",
-          description: `Un nouveau stagiaire vous a été assigné pour encadrement`,
-          type: 'encadrement_new'
-        });
+      await createNotification({
+        user_id: stagiaire_id,
+        titre: "Formateur assigné",
+        description: `Votre formateur a été modifié`,
+        type: "encadrement_assigned"
+      });
 
-        await createNotification({
-          user_id: stagiaire_id,
-          titre: "Formateur assigné",
-          description: `Un formateur a été assigné pour votre encadrement`,
-          type: 'encadrement_assigned'
-        });
-      }
-
-      res.json({ 
+      res.json({
         success: true,
-        message: "Encadrement enregistré avec succès" 
+        message: "Encadrement mis à jour avec succès"
       });
 
     } catch (error) {
-      console.error('Erreur encadrement:', error);
-      res.status(500).json({ 
+      console.error("Erreur encadrement:", error);
+      res.status(500).json({
         success: false,
-        error: error.message 
+        error: error.message
       });
     }
   }
