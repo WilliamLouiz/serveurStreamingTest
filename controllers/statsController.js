@@ -252,11 +252,13 @@ class StatsController {
       `SELECT COUNT(*) as total FROM streams_replay WHERE certificat_valide = true`
     );
 
+    const replaysCertifie = parseInt(replaysCertifies.rows[0].total);
+
     return {
       total_stagiaires: total,
       taux_encadrement: total > 0 ? Math.round((encadres / total) * 100) : 0,
       taux_notation: total > 0 ? Math.round((totalReplayNote / totalReplay) * 100) : 0,
-      taux_certification: total > 0 ? Math.round((certifies / totalReplay) * 100) : 0,
+      taux_certification: total > 0 ? Math.round((replaysCertifie / totalReplay) * 100) : 0,
       encadres,
       notes,
       certifies
