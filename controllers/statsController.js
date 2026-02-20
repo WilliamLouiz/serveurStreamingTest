@@ -236,11 +236,27 @@ class StatsController {
     );
     const certifies = parseInt(stagiairesCertifies.rows[0].total);
 
+    // Replays notés (avec note non nulle)
+    const replaysNotes = await pool.query(
+      `SELECT COUNT(*) as total FROM streams_replay WHERE note IS NOT NULL`
+    );
+    const totalReplayNote = parseInt(replaysNotes.rows[0].total);
+    // Total replays
+    const totalReplays = await pool.query(
+      `SELECT COUNT(*) as total FROM streams_replay`
+    );
+    const totalReplay = parseInt(totalReplays.rows[0].total);
+
+    // Replays certifiés
+    const replaysCertifies = await pool.query(
+      `SELECT COUNT(*) as total FROM streams_replay WHERE certificat_valide = true`
+    );
+
     return {
       total_stagiaires: total,
       taux_encadrement: total > 0 ? Math.round((encadres / total) * 100) : 0,
-      taux_notation: total > 0 ? Math.round((notes / total) * 100) : 0,
-      taux_certification: total > 0 ? Math.round((certifies / total) * 100) : 0,
+      taux_notation: total > 0 ? Math.round((totalReplayNote / totalReplay) * 100) : 0,
+      taux_certification: total > 0 ? Math.round((certifies / totalReplay) * 100) : 0,
       encadres,
       notes,
       certifies
