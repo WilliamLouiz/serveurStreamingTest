@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { authenticate, authorize } = require('../middleware/auth');
+const { ROLES } = require('../config/constants');
 const pool = require('../config/database');
 const authRoutes = require('./authRoutes');
 const userRoutes = require('./userRoutes');
@@ -12,6 +13,7 @@ const notificationRoute = require("./notificationRoutes");
 const commentRoutes = require("./commentRoutes");
 const twoFactorRoutes = require("./twoFactorRoutes");
 const certificatRoutes = require('./certificatRoutes');
+const statsController = require('../controllers/statsController');
 
 const path = require('path');
 // Utiliser les routes
@@ -26,6 +28,7 @@ router.use("/comments", commentRoutes);
 router.use("/2fa", twoFactorRoutes);
 router.use('/certificats', certificatRoutes);
 
+router.get('/admin/stats', authenticate, authorize(ROLES.ADMIN), statsController.getAdminStats);
 
 // route pour vérifier l'identifiant stagiaire
 router.post('/verify-stagiaire', async (req, res) => {
