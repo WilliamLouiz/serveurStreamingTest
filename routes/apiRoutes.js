@@ -281,11 +281,20 @@ router.get('/replays/all-with-notes', authenticate, async (req, res) => {
 
     let query = `
       SELECT 
-        sr.*,
+        sr.id,
+        sr.file_path,
+        sr.stagiaire_id,
+        sr.channel_id,
+        sr.duration,
+        sr.created_at,
+        sr.expires_at,
+        sr.note,
+        sr.certificat_valide, 
+        sr.user_id,
         u.id as stagiaire_user_id,
         u.nom as stagiaire_nom,
         u.prenom as stagiaire_prenom,
-        u.stagiaire_id,
+        u.stagiaire_id as stagiaire_identifiant,
         f.nom as formateur_nom,
         f.prenom as formateur_prenom
       FROM streams_replay sr
@@ -603,21 +612,24 @@ router.post('/streams/:channelId/rate-live', authenticate, async (req, res) => {
 
     // Chercher l'entrée dans streams_replay (même sans fichier)
     const existing = await pool.query(
-      `SELECT id FROM streams_replay 
+      `SELECT id, certificat_valide FROM streams_replay 
        WHERE channel_id = $1`,
       [channelId]
     );
 
     let replayId;
+    let certificatActuel = false;
 
     if (existing.rows.length > 0) {
       // Mettre à jour l'entrée existante
       replayId = existing.rows[0].id;
+      certificatActuel = existing.rows[0].certificat_valide;
+
       await pool.query(
         `UPDATE streams_replay 
-         SET note = $2, certificat_valide = $3
+         SET note = $2
          WHERE id = $1`,
-        [replayId, note_sur_20, note_sur_20 >= 10]
+        [replayId, note_sur_20]
       );
     } else {
       // Créer une nouvelle entrée (au cas où)
@@ -626,7 +638,7 @@ router.post('/streams/:channelId/rate-live', authenticate, async (req, res) => {
           (user_id, stagiaire_id, channel_id, file_path, note, certificat_valide, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '24 hours')
          RETURNING id`,
-        [stagiaire_user_id, stagiaire_user_id, channelId, '', note_sur_20, note_sur_20 >= 10]
+        [stagiaire_user_id, stagiaire_user_id, channelId, '', note_sur_20, false]
       );
       replayId = result.rows[0].id;
     }
@@ -646,7 +658,7 @@ router.post('/streams/:channelId/rate-live', authenticate, async (req, res) => {
       replay_id: replayId,
       note_sur_20,
       note_sur_5,
-      certificat_valide: note_sur_20 >= 10
+      certificat_valide: certificatActuel
     });
 
   } catch (error) {
