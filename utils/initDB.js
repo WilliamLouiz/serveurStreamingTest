@@ -466,6 +466,39 @@ async function createTables() {
       )
     `);
 
+    // Table tasks (tâches créées par l'admin)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        max_score INTEGER NOT NULL DEFAULT 5,
+        is_active BOOLEAN DEFAULT true,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+      )
+    `);
+
+    // Table task_evaluations (évaluations des tâches par formateur)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS task_evaluations (
+        id SERIAL PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        formateur_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        stagiaire_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        replay_id INTEGER REFERENCES streams_replay(id) ON DELETE CASCADE,
+        score INTEGER NOT NULL,
+        comment TEXT,
+        evaluated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        
+        CONSTRAINT check_score_range CHECK (score >= 1 AND score <= 5),
+        CONSTRAINT unique_task_stagiaire_replay UNIQUE (task_id, stagiaire_id, replay_id)
+      )
+    `);
+
     // Créer tous les index nécessaires
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -494,6 +527,12 @@ async function createTables() {
       CREATE INDEX IF NOT EXISTS idx_user_2fa_codes_user_id ON user_2fa_codes(user_id);
       CREATE INDEX IF NOT EXISTS idx_user_2fa_codes_code ON user_2fa_codes(code);
       CREATE INDEX IF NOT EXISTS idx_user_2fa_codes_expires ON user_2fa_codes(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_tasks_created_by ON tasks(created_by);
+      CREATE INDEX IF NOT EXISTS idx_tasks_is_active ON tasks(is_active);
+      CREATE INDEX IF NOT EXISTS idx_task_evaluations_task ON task_evaluations(task_id);
+      CREATE INDEX IF NOT EXISTS idx_task_evaluations_formateur ON task_evaluations(formateur_id);
+      CREATE INDEX IF NOT EXISTS idx_task_evaluations_stagiaire ON task_evaluations(stagiaire_id);
+      CREATE INDEX IF NOT EXISTS idx_task_evaluations_replay ON task_evaluations(replay_id);
     `);
 
     // Créer un utilisateur admin par défaut

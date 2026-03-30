@@ -14,6 +14,7 @@ const commentRoutes = require("./commentRoutes");
 const twoFactorRoutes = require("./twoFactorRoutes");
 const certificatRoutes = require('./certificatRoutes');
 const statsController = require('../controllers/statsController');
+const taskRoutes = require("./taskRoutes");
 
 const path = require('path');
 // Utiliser les routes
@@ -27,8 +28,8 @@ router.use("/notifications", notificationRoute);
 router.use("/comments", commentRoutes);
 router.use("/2fa", twoFactorRoutes);
 router.use('/certificats', certificatRoutes);
-
 router.get('/admin/stats', authenticate, authorize(ROLES.ADMIN), statsController.getAdminStats);
+router.use("/tasks", taskRoutes);
 
 // route pour vérifier l'identifiant stagiaire
 router.post('/verify-stagiaire', async (req, res) => {
